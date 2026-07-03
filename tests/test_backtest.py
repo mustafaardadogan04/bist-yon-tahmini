@@ -70,6 +70,14 @@ def test_strateji_nakitte_getiri_sifir():
     assert m["islem_sayisi"] == 0
 
 
+def test_strateji_maliyet_parametresi():
+    # maliyet=0 verildiginde kesinti olmamali (pano kaydiricisinin kullandigi yol)
+    pozisyon = pd.Series([1, 1])
+    getiri = pd.Series([0.01, 0.01])
+    m = bt.strateji_metrikleri(pozisyon, getiri, maliyet=0.0)
+    assert m["kumulatif_getiri"] == pytest.approx(1.01 * 1.01 - 1)
+
+
 # --- 02: walk-forward sizintisizlik -----------------------------------------
 
 def test_walk_forward_test_hep_egitimin_geleceginde():

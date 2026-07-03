@@ -41,8 +41,10 @@ def veri_yukle() -> pd.DataFrame:
 
 @st.cache_data(show_spinner="Hisse yfinance'ten cekiliyor...")
 def hisse_cek(ticker: str) -> pd.DataFrame:
-    # yeni bir BIST kodunu canli cek (01'in ozellik hattindan gecir)
-    return veri.hisseyi_isle(ticker, None)
+    # yeni bir BIST kodunu canli cek (01'in ozellik hattindan gecir).
+    # USD/TRY de dahil: CSV'deki hisselerle ayni ozellik seti olsun
+    usdtry = veri.usdtry_degisimi_cek()
+    return veri.hisseyi_isle(ticker, usdtry if not usdtry.empty else None)
 
 
 @st.cache_data(show_spinner=False)
@@ -52,24 +54,15 @@ def backtest_calistir(df_tek: pd.DataFrame, model_ad: str,
     return bt.walk_forward(df2, ml.MODELLER[model_ad], egitim, test, adim, False)
 
 
-def strateji_serisi(pozisyon: pd.Series, getiri: pd.Series, maliyet: float) -> pd.Series:
-    # sermaye egrisi icin gunluk maliyet sonrasi getiri
-    pozisyon = pozisyon.reset_index(drop=True)
-    getiri = getiri.reset_index(drop=True)
-    degisim = pozisyon.diff().abs()
-    degisim.iloc[0] = abs(pozisyon.iloc[0])
-    return pozisyon * getiri - degisim * maliyet
-
-
 def guncel_sinyal(df_tek: pd.DataFrame, model_ad: str):
-    # gecmisle egit, en son gunu tahmin et
-    df2 = bt.ertesi_getiri_ekle(df_tek)
+    # sonucu bilinen gunlerle egit, verideki EN SON gunu tahmin et
+    df2 = bt.ertesi_getiri_ekle(df_tek)   # yarini bilinmeyen son gun burada duser
     if len(df2) < 50:
         return None, None
     ozellik = [k for k in df2.columns if k not in bt.META_KOLONLAR]
-    X, y = df2[ozellik], df2["hedef"]
-    tahmin = ml.MODELLER[model_ad](X.iloc[:-1], y.iloc[:-1], X.iloc[[-1]])
-    return int(tahmin[0]), df2["tarih"].iloc[-1]
+    son = df_tek.sort_values("tarih").iloc[[-1]]   # gercek en son gun
+    tahmin = ml.MODELLER[model_ad](df2[ozellik], df2["hedef"], son[ozellik])
+    return int(tahmin[0]), son["tarih"].iloc[-1]
 
 
 st.set_page_config(page_title="BIST Hibrit Tahmin", page_icon="📈", layout="wide")
@@ -124,8 +117,7 @@ with st.spinner("Hesaplaniyor..."):
         st.warning("Backtest sonucu bos — pencere ayarlarini kucult.")
         st.stop()
 
-    bt.ISLEM_MALIYETI = maliyet
-    strat = bt.strateji_metrikleri(oos["tahmin"], oos["ertesi_getiri"])
+    strat = bt.strateji_metrikleri(oos["tahmin"], oos["ertesi_getiri"], maliyet)
     sinif = bt.siniflandirma_metrikleri(oos["hedef"].to_numpy(), oos["tahmin"].to_numpy())
     sinyal, sinyal_tarih = guncel_sinyal(df_tek, model_ad)
 
@@ -152,7 +144,7 @@ k[3].metric("Maks dusus", f"{strat['maks_dusus']:.1%}")
 k[4].metric("Islem sayisi", f"{strat['islem_sayisi']}")
 
 # Sermaye egrisi
-strat_get = strateji_serisi(oos["tahmin"], oos["ertesi_getiri"], maliyet)
+strat_get = bt.strateji_serisi(oos["tahmin"], oos["ertesi_getiri"], maliyet)
 egri = pd.DataFrame({
     "tarih": pd.to_datetime(oos["tarih"]).reset_index(drop=True),
     "Strateji": (1 + strat_get).cumprod(),
@@ -167,8 +159,9 @@ with st.expander("Yon dogrulugu detayi (F1 / kesinlik / duyarlilik)"):
     d[0].metric("F1", f"{sinif['f1']:.3f}")
     d[1].metric("Kesinlik", f"{sinif['kesinlik']:.3f}")
     d[2].metric("Duyarlilik", f"{sinif['duyarlilik']:.3f}")
-    st.caption("Borsada ~%53-55 yon dogrulugu (maliyet sonrasi anlamliysa) gercek bir basaridir. "
-               "%90 gorursen kod hatasi ara.")
+    st.caption("Yon dogrulugunu tek basina okuma: taban oran (hep ayni sinifi soylemek) bile "
+               "yuksek cikabilir. Olcut, maliyet sonrasi getiri ve Sharpe. "
+               "%90 dogruluk gorursen kod hatasi ara.")
 
 st.divider()
 st.caption("⚠️ Sonuclar ornek-disi gunlerde, secilen islem maliyeti dusulerek hesaplanir. "

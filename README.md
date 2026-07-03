@@ -1,6 +1,6 @@
 # BIST Hibrit Tahmin
 
-> 🇬🇧 **English summary** — Next-day direction prediction for Borsa Istanbul stocks from technical indicators, with an honest evaluation setup: walk-forward backtesting (no look-ahead leakage), transaction costs included, and every result benchmarked against buy & hold. Out-of-sample, XGBoost reaches Sharpe 1.35 with ~56% directional accuracy — and still does not beat buy & hold in a strong bull market, which the project openly reports. Includes a Streamlit dashboard and unit tests. Educational project, not financial advice.
+> 🇬🇧 **English summary** — Next-day direction prediction for Borsa Istanbul stocks from technical indicators, with an honest evaluation setup: walk-forward backtesting (no look-ahead leakage), transaction costs included, and every result benchmarked against buy & hold. Out-of-sample, XGBoost reaches Sharpe 1.35 with 60.3% directional accuracy (below the 67.9% majority base rate — exactly why returns, not raw accuracy, are the yardstick here) — and still does not beat buy & hold in a strong bull market, which the project openly reports. Includes a Streamlit dashboard and unit tests. Educational project, not financial advice.
 
 Borsa İstanbul hisseleri için teknik göstergelerle "yarın yükselir mi?" tahmini yapan bir proje. Derdim yüksek getiri değildi; **dürüst bir değerlendirme** kurmaktı. Çoğu borsa/ML projesi veri sızıntısı yüzünden gerçekçi olmayan sonuçlar gösteriyor, ben bundan kaçınmaya çalıştım.
 
@@ -23,9 +23,9 @@ Sonuçlara accuracy ile değil; işlem maliyeti (binde ~1.5) düşülmüş getir
 | Getiri | +633% | +2663% |
 | Sharpe | 1.35 | — |
 | Maks düşüş | −27.8% | daha derin |
-| Yön isabeti | %55.9 | — |
+| Yön isabeti | %60.3 (taban oran %67.9) | — |
 
-Dürüst olmak gerekirse: teknik göstergeler tek başına, böyle güçlü bir boğa piyasasında al-tut'un getirisini yenmiyor. Ama makul bir Sharpe, daha sınırlı düşüş ve borsa için gerçekçi sayılan ~%56 yön isabeti veriyor.
+Dürüst olmak gerekirse: teknik göstergeler tek başına, böyle güçlü bir boğa piyasasında al-tut'un getirisini yenmiyor; kazandırdığı şey makul bir Sharpe ve daha sınırlı düşüş. Yön isabetine de dikkat: %60.3 iyi görünse de taban oran %67.9 — yani "hep düşecek" diyen bile isabette önde olurdu. İsabet oranının tek başına neden yanıltıcı olduğunun kanıtı bu; ölçütüm maliyet sonrası getiri.
 
 Karar eşiğini düşürünce backtest getirisi artıyordu, ama bunu yapmadım: sonucu görüp ona göre ayar çekmek test'e uydurmak (overfitting) olurdu. Varsayılan eşiği 0.5'te bıraktım.
 
@@ -48,6 +48,7 @@ XGBoost her metrikte önde, o yüzden panoda varsayılan o.
 02_backtest.py             walk-forward backtest motoru
 03_model.py                modeller (lojistik, XGBoost, LightGBM)
 04_dashboard.py            Streamlit arayüzü
+tests/                     birim testler (pytest)
 borsa_veri.csv             örnek işlenmiş veri
 ```
 
@@ -55,7 +56,7 @@ borsa_veri.csv             örnek işlenmiş veri
 
 ```bash
 pip install -r requirements.txt
-python 01_veri_ve_ozellikler.py   # borsa_veri.csv üretir (hazır olanı da kullanabilirsin)
+python 01_veri_ve_ozellikler.py --usdtry   # borsa_veri.csv üretir (hazır olanı da kullanabilirsin)
 streamlit run 04_dashboard.py     # panoyu açar
 ```
 

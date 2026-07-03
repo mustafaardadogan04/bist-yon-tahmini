@@ -37,16 +37,25 @@ def siniflandirma_metrikleri(gercek: np.ndarray, tahmin: np.ndarray) -> dict:
     }
 
 
-def strateji_metrikleri(pozisyon: pd.Series, ertesi_getiri: pd.Series) -> dict:
-    # pozisyon: 1=long, 0=nakit. Maliyet sonrasi PnL metrikleri.
+def strateji_serisi(pozisyon: pd.Series, ertesi_getiri: pd.Series,
+                    maliyet: float = ISLEM_MALIYETI) -> pd.Series:
+    # gunluk maliyet-sonrasi strateji getirisi (sermaye egrisi ve metrikler icin)
     pozisyon = pozisyon.reset_index(drop=True)
     getiri = ertesi_getiri.reset_index(drop=True)
-
     degisim = pozisyon.diff().abs()
     degisim.iloc[0] = abs(pozisyon.iloc[0])  # ilk gun girise de maliyet
-    maliyet = degisim * ISLEM_MALIYETI
+    return pozisyon * getiri - degisim * maliyet
 
-    strat_getiri = pozisyon * getiri - maliyet
+
+def strateji_metrikleri(pozisyon: pd.Series, ertesi_getiri: pd.Series,
+                        maliyet: float = ISLEM_MALIYETI) -> dict:
+    # pozisyon: 1=long, 0=nakit. Maliyet sonrasi PnL metrikleri.
+    strat_getiri = strateji_serisi(pozisyon, ertesi_getiri, maliyet)
+    pozisyon = pozisyon.reset_index(drop=True)
+    getiri = ertesi_getiri.reset_index(drop=True)
+    degisim = pozisyon.diff().abs()
+    degisim.iloc[0] = abs(pozisyon.iloc[0])
+
     return {
         "kumulatif_getiri": float((1 + strat_getiri).prod() - 1),
         "al_tut_getiri": float((1 + getiri).prod() - 1),

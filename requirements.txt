@@ -2,14 +2,14 @@
 # Kurulum: python -m pip install -r requirements.txt
 
 # Veri ve sayisal islemler
-pandas
-numpy
-yfinance
+pandas>=2.0
+numpy>=1.24
+yfinance>=0.2
 
 # Modelleme
-scikit-learn
-xgboost
-lightgbm
+scikit-learn>=1.3
+xgboost>=2.0
+lightgbm>=4.0
 
 # Interaktif pano
-streamlit
+streamlit>=1.30
