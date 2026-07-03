@@ -1,0 +1,15 @@
+# BIST Hibrit Tahmin Projesi — bagimliliklar
+# Kurulum: python -m pip install -r requirements.txt
+
+# Veri ve sayisal islemler
+pandas
+numpy
+yfinance
+
+# Modelleme
+scikit-learn
+xgboost
+lightgbm
+
+# Interaktif pano
+streamlit
