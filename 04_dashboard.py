@@ -76,7 +76,7 @@ def guncel_sinyal(df_tek: pd.DataFrame, model_ad: str):
 def _portfoy_ham(df_secili: pd.DataFrame, model_ad: str, kesim_iso: str):
     # Her secili hisseyi kesim tarihine kadar egit, sonra o gunden bugune her gun
     # yukselis olasiligi + gercek getiri uret. Egitim yalniz kesim'den ONCEKI
-    # veriyle -> gelecekten sizinti yok. (sermaye/maliyetten bagimsiz -> cache'li)
+    # veriyle -> gelecekten sizinti yok. (strateji/sermaye/maliyetten bagimsiz)
     kesim = pd.Timestamp(kesim_iso)
     getiri_tab, proba_tab = {}, {}
     for h, d in df_secili.groupby("hisse"):
@@ -92,58 +92,62 @@ def _portfoy_ham(df_secili: pd.DataFrame, model_ad: str, kesim_iso: str):
         proba_tab[h.replace(".IS", "")] = pd.Series(proba, index=idx)
     if not getiri_tab:
         return None
-
-    G = pd.DataFrame(getiri_tab).sort_index()          # tarih x hisse : gercek getiri
-    P = pd.DataFrame(proba_tab).reindex(G.index)       # tarih x hisse : yukselis olasiligi
-    al = P.where(P > 0.5)                               # AL olmayanlar NaN
-    gecerli = al.notna().any(axis=1)                    # o gun en az bir AL sinyali var mi
-    en_iyi = pd.Series(pd.NA, index=al.index, dtype=object)
-    en_iyi.loc[gecerli] = al.loc[gecerli].idxmax(axis=1)   # en guvendigi AL hisse (yoksa NA)
-
-    port_get, turnover, secili_gun = [], [], []
-    onceki = None
-    for t in G.index:
-        h = en_iyi.loc[t]
-        if pd.isna(h):
-            port_get.append(0.0)                        # hepsi BEKLE -> nakit
-            turnover.append(1 if onceki is not None else 0)
-            onceki = None
-            secili_gun.append("Nakit")
-        else:
-            port_get.append(float(G.loc[t, h]))         # en guvendigi hisseye yuklen
-            turnover.append(0 if h == onceki else 1)    # ayni hisse ise maliyet yok
-            onceki = h
-            secili_gun.append(h)
-
-    return {
-        "tarihler": [pd.Timestamp(t) for t in G.index],
-        "getiri": {h: G[h].fillna(0).tolist() for h in G.columns},   # bireysel egriler
-        "port_get": port_get, "turnover": turnover, "secili_gun": secili_gun,
-    }
+    G = pd.DataFrame(getiri_tab).sort_index()
+    P = pd.DataFrame(proba_tab).reindex(G.index)
+    return {"tarihler": [pd.Timestamp(t) for t in G.index],
+            "getiri": {h: G[h].fillna(0).tolist() for h in G.columns},
+            "proba": {h: P[h].fillna(0.0).tolist() for h in P.columns}}
 
 
-def portfoy_test(df_secili, model_ad, kesim_iso, sermaye, maliyet):
-    # ucuz kisim: sermaye + maliyet (turnover) uygula, egrileri kur
+def portfoy_test(df_secili, model_ad, kesim_iso, sermaye, maliyet, tarz, k):
+    # ucuz kisim: secili tarza gore portfoyu kur (aktif = gunluk gecis, al_tut = bastaki en iyi K)
     r = _portfoy_ham(df_secili, model_ad, kesim_iso)
     if r is None:
         return None
     tarihler = pd.to_datetime(r["tarihler"])
-    port = pd.Series(r["port_get"]) - maliyet * pd.Series(r["turnover"])
+    G = pd.DataFrame(r["getiri"], index=tarihler)
+    P = pd.DataFrame(r["proba"], index=tarihler)
+
+    if tarz == "aktif":
+        # her gun en guvendigi AL hisseye yuklen; ayni kalirsa maliyet yok
+        al = P.where(P > 0.5)
+        gecerli = al.notna().any(axis=1)
+        en_iyi = pd.Series(pd.NA, index=al.index, dtype=object)
+        en_iyi.loc[gecerli] = al.loc[gecerli].idxmax(axis=1)
+        port_get, turnover, secili = [], [], []
+        onceki = None
+        for t in G.index:
+            h = en_iyi.loc[t]
+            if pd.isna(h):
+                port_get.append(0.0); turnover.append(1 if onceki else 0); onceki = None
+                secili.append("Nakit")
+            else:
+                port_get.append(float(G.loc[t, h]))
+                turnover.append(0 if h == onceki else 1); onceki = h
+                secili.append(h)
+        port = pd.Series(port_get, index=G.index) - maliyet * pd.Series(turnover, index=G.index)
+        tutulan = pd.Series(secili).value_counts()
+        aciklama = f"Model her gün en güvendiği AL hissesine geçti. En çok: "
+    else:
+        # AL VE TUT: kesimdeki (ilk gun) en guvendigi K hisseyi al, sona kadar esit tut
+        ilk = P.iloc[0].sort_values(ascending=False)
+        secilen = list(ilk.head(k).index)
+        port = G[secilen].mean(axis=1).copy()
+        port.iloc[0] -= maliyet          # sadece bir kez giris maliyeti
+        tutulan = pd.Series({h: len(G) for h in secilen})
+        aciklama = f"Kesim gününde modelin en güvendiği {len(secilen)} hisse alınıp tutuldu: "
 
     egri = {h: (sermaye * (1 + pd.Series(gl)).cumprod()).values for h, gl in r["getiri"].items()}
-    egri["★ Model portföy"] = (sermaye * (1 + port).cumprod()).values
+    egri["★ Model portföy"] = (sermaye * (1 + port.values).cumprod())
     egri_df = pd.DataFrame(egri, index=tarihler)
-
-    bench = pd.DataFrame(r["getiri"]).mean(axis=1)      # secili hisseleri esit tut
-    # en cok hangi hisse tutuldu
-    tutulan = pd.Series(r["secili_gun"]).value_counts()
+    bench = pd.DataFrame(r["getiri"]).mean(axis=1)
     return {
         "gun": len(tarihler), "baslangic": tarihler[0],
-        "model_son": sermaye * float((1 + port).prod()),
-        "model_getiri": float((1 + port).prod() - 1),
+        "model_son": sermaye * float((1 + port.values).prod()),
+        "model_getiri": float((1 + port.values).prod() - 1),
         "bench_son": sermaye * float((1 + bench.values).prod()),
         "bench_getiri": float((1 + bench.values).prod() - 1),
-        "egri": egri_df, "tutulan": tutulan,
+        "egri": egri_df, "tutulan": tutulan, "aciklama": aciklama,
     }
 
 
@@ -256,7 +260,16 @@ with sekme_gecmis:
                              ["1 ay önce", "3 ay önce", "6 ay önce", "1 yıl önce", "2 yıl önce"],
                              index=2)
 
-        if st.button("▶ En iyi senaryoyu hesapla", type="primary"):
+        h1, h2 = st.columns([2, 1])
+        tarz_etiket = h1.radio(
+            "İşlem tarzı",
+            ["🔄 Günlük aktif — her gün en güvendiğine geç",
+             "📌 Al ve tut — baştaki en iyi K hisseyi tut"],
+            help="Aktif: sık al-sat (maliyet yüksek). Al-tut: baştan seçip tutar (maliyet ~yok).")
+        tarz = "aktif" if tarz_etiket.startswith("🔄") else "al_tut"
+        port_k = h2.slider("Al-tut: kaç hisse?", 1, 8, 3, disabled=(tarz == "aktif"))
+
+        if st.button("▶ Hesapla", type="primary"):
             st.session_state["pf_calistir"] = True
 
         if st.session_state.get("pf_calistir"):
@@ -270,7 +283,7 @@ with sekme_gecmis:
                 df_sec = tum_veri[tum_veri["hisse"].isin(secili)]
                 with st.spinner(f"{len(secili)} hisse için model o güne kadar eğitiliyor..."):
                     pf = portfoy_test(df_sec, model_ad, pd.Timestamp(kesim).isoformat(),
-                                      para, maliyet)
+                                      para, maliyet, tarz, port_k)
                 if pf is None:
                     st.warning("Bu zaman aralığı için yeterli veri yok — daha yakın bir zaman seç.")
                 else:
@@ -286,11 +299,12 @@ with sekme_gecmis:
 
                     en_cok = pf["tutulan"].drop(labels=["Nakit"], errors="ignore")
                     tutulan_txt = ", ".join(f"{h} ({n}g)" for h, n in en_cok.head(4).items()) or "—"
+                    kiyas = ("Model al-tut'u geçti 👍" if pf["model_getiri"] > pf["bench_getiri"]
+                             else "Bu dönemde al-tut'u geçemedi.")
                     st.caption(
-                        f"💡 {_tl(para)} ile {pf['baslangic']:%d.%m.%Y}'te başlandı. Model her gün "
-                        f"seçilenler içinden en güvendiği (en çok artış beklediği) AL hissesine "
-                        f"yüklendi, hiç AL yoksa nakitte kaldı. En çok tutulanlar: {tutulan_txt}. "
-                        "Model yalnızca geçmiş veriyle karar verdi — geleceği görmedi, sızıntı yok.")
+                        f"💡 {_tl(para)} ile {pf['baslangic']:%d.%m.%Y}'te başlandı. {pf['aciklama']}"
+                        f"{tutulan_txt}. {kiyas} Model yalnızca geçmiş veriyle karar verdi — "
+                        "geleceği görmedi, sızıntı yok.")
 
 st.divider()
 st.caption("⚠️ Sonuçlar örnek-dışı günlerde, seçilen işlem maliyeti düşülerek hesaplanır. "
