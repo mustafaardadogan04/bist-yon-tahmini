@@ -17,6 +17,7 @@ CLAUDE.md
 
 # Geliştirme/analiz adımları — GitHub'a gitmesin (diskte durur, git izlemez)
 deneyler/
+deney_*.csv
 
 # Üretilen çıktılar (isteğe bağlı — istersen yorum satırı yap)
 # rapor.html

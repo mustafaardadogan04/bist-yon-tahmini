@@ -8,6 +8,7 @@ Ozellikler yalnizca gecmise bakar. shift(-1) SADECE hedef icin: "yarin
 yukselecek mi?" etiketi. Bu, bir ozellik olarak modele verilmez.
 
     python 01_veri_ve_ozellikler.py --hisseler THYAO.IS GARAN.IS --usdtry
+    python 01_veri_ve_ozellikler.py --usdtry --endeks --cikti deney_endeksli.csv
 """
 
 import argparse
@@ -21,6 +22,7 @@ VARSAYILAN_HISSELER = ["THYAO.IS"]
 BASLANGIC_TARIHI = "2018-01-01"
 HEDEF_ESIK = 0.01            # ertesi gun > %1 ise 1
 USDTRY_TICKER = "TRY=X"
+ENDEKS_TICKER = "XU100.IS"   # BIST 100 — piyasa ruzgari (--endeks)
 CIKTI_DOSYASI = "borsa_veri.csv"
 
 
@@ -76,6 +78,38 @@ def usdtry_degisimi_cek() -> pd.Series:
     return degisim
 
 
+def endeks_ozellikleri_cek() -> pd.DataFrame | None:
+    # XU100: piyasa ruzgari. Hepsi ayni gun bilinen degerler -> sizinti yok
+    ham = yf.download(ENDEKS_TICKER, start=BASLANGIC_TARIHI, auto_adjust=True, progress=False)
+    if ham.empty:
+        return None
+    if isinstance(ham.columns, pd.MultiIndex):
+        ham.columns = ham.columns.get_level_values(0)
+
+    kapanis = ham["Close"]
+    getiri = kapanis.pct_change()
+    df = pd.DataFrame(index=ham.index)
+    df["endeks_getiri"] = getiri
+    df["endeks_getiri5"] = kapanis.pct_change(5)     # yalniz goreli guc hesabi icin
+    df["endeks_getiri20"] = kapanis.pct_change(20)   # yalniz goreli guc hesabi icin
+    df["endeks_vol5"] = getiri.rolling(5).std()
+    df["endeks_vol20"] = getiri.rolling(20).std()
+    sma20 = kapanis.rolling(20).mean()
+    df["endeks_sma20_fark"] = (kapanis - sma20) / sma20
+    return df
+
+
+def kur_volatilitesi_cek() -> pd.DataFrame | None:
+    # USD/TRY oynakligi: kur soku gunlerinde hisse davranisi degisir (rejim sinyali)
+    degisim = usdtry_degisimi_cek()
+    if degisim.empty:
+        return None
+    df = pd.DataFrame(index=degisim.index)
+    df["usdtry_vol5"] = degisim.rolling(5).std()
+    df["usdtry_vol20"] = degisim.rolling(20).std()
+    return df
+
+
 def ozellik_uret(fiyat: pd.DataFrame) -> pd.DataFrame:
     df = pd.DataFrame(index=fiyat.index)
     kapanis = fiyat["Close"]
@@ -120,7 +154,9 @@ def hedef_ekle(fiyat: pd.DataFrame) -> pd.Series:
     return hedef
 
 
-def hisseyi_isle(ticker: str, usdtry: pd.Series | None) -> pd.DataFrame:
+def hisseyi_isle(ticker: str, usdtry: pd.Series | None,
+                 endeks: pd.DataFrame | None = None,
+                 kur_vol: pd.DataFrame | None = None) -> pd.DataFrame:
     fiyat = fiyat_cek(ticker)
     if fiyat.empty:
         print(f"  ! {ticker}: veri bulunamadi, atlaniyor.")
@@ -132,6 +168,18 @@ def hisseyi_isle(ticker: str, usdtry: pd.Series | None) -> pd.DataFrame:
 
     if usdtry is not None:
         ozellikler = ozellikler.join(usdtry, how="left")
+
+    if endeks is not None:
+        # piyasa ruzgari + hissenin ruzgara gore konumu (goreli guc)
+        ozellikler = ozellikler.join(endeks, how="left")
+        ozellikler["goreli_guc1"] = ozellikler["getiri"] - ozellikler["endeks_getiri"]
+        ozellikler["goreli_guc5"] = fiyat["Close"].pct_change(5) - ozellikler["endeks_getiri5"]
+        ozellikler["goreli_guc20"] = fiyat["Close"].pct_change(20) - ozellikler["endeks_getiri20"]
+        # ham 5/20g endeks getirileri yalniz goreli guc icin gerekliydi
+        ozellikler = ozellikler.drop(columns=["endeks_getiri5", "endeks_getiri20"])
+
+    if kur_vol is not None:
+        ozellikler = ozellikler.join(kur_vol, how="left")
 
     # inf'leri (orn. onceki hacim 0) NaN yap, sonra gosterge isinmasi + hedef
     # kaymasi NaN'lariyla birlikte at
@@ -153,6 +201,10 @@ def main() -> None:
         help="USD/TRY gunluk degisimini ortak ozellik olarak ekle",
     )
     ayristirici.add_argument(
+        "--endeks", action="store_true",
+        help="XU100 + goreli guc + kur volatilitesi ozelliklerini ekle (Deney 1)",
+    )
+    ayristirici.add_argument(
         "--cikti", default=CIKTI_DOSYASI, help="Cikti CSV dosyasinin adi",
     )
     args = ayristirici.parse_args()
@@ -162,8 +214,17 @@ def main() -> None:
         print("! USD/TRY verisi cekilemedi, bu ozellik olmadan devam ediliyor.")
         usdtry = None
 
+    endeks = kur_vol = None
+    if args.endeks:
+        endeks = endeks_ozellikleri_cek()
+        kur_vol = kur_volatilitesi_cek()
+        if endeks is None:
+            print("! XU100 verisi cekilemedi, endeks ozellikleri olmadan devam ediliyor.")
+        if kur_vol is None:
+            print("! Kur verisi cekilemedi, kur volatilitesi olmadan devam ediliyor.")
+
     print(f"Isleniyor: {', '.join(args.hisseler)}")
-    parcalar = [hisseyi_isle(t, usdtry) for t in args.hisseler]
+    parcalar = [hisseyi_isle(t, usdtry, endeks, kur_vol) for t in args.hisseler]
     parcalar = [p for p in parcalar if not p.empty]
 
     if not parcalar:
