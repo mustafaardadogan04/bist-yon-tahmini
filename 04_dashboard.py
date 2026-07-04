@@ -254,18 +254,22 @@ with sekme_zaman:
         if zm is None:
             st.warning("Bu tarih için yeterli veri yok — daha ortada bir zaman seç.")
         else:
-            z1, z2 = st.columns(2)
+            z1, z2, z3 = st.columns(3)
             with z1:
                 if zm["sinyal"] == 1:
-                    st.success(f"### AL\n{zm['tarih']:%d.%m.%Y} verisine göre")
+                    st.success(f"### AL\n{zm['tarih']:%d.%m.%Y}")
                 else:
-                    st.info(f"### BEKLE\n{zm['tarih']:%d.%m.%Y} verisine göre")
+                    st.info(f"### BEKLE\n{zm['tarih']:%d.%m.%Y}")
             with z2:
                 dogru = (zm["sinyal"] == 1) == zm["hedef_tuttu"]
-                st.metric("Ertesi gün gerçekte", f"{zm['ertesi_getiri']:+.2%}",
+                st.metric("Ertesi gün (modelin tahmini)", f"{zm['ertesi_getiri']:+.2%}",
                           "✅ model haklı" if dogru else "✗ model yanıldı")
-            st.caption(f"Sonraki {zm['ileri_gun']} işlem günü al-tut: **{zm['kumulatif']:+.1%}** "
-                       "(bağlam için — model yalnızca ertesi günü tahmin eder).")
+            with z3:
+                son_para = sermaye * (1 + zm["kumulatif"])
+                st.metric(f"{_tl(sermaye)} → {zm['ileri_gun']} gün sonra",
+                          _tl(son_para), f"{zm['kumulatif']:+.1%}")
+            st.caption("💰 Para: kesim gününde alıp elde tutma senaryosu (al-tut). "
+                       "Model yalnızca **ertesi günü** tahmin eder — para, sonrasını görmen için.")
             _zegri = pd.DataFrame({
                 "tarih": pd.to_datetime(zm["sonraki_egri"]["tarih"]).values,
                 "Fiyat (kesim=1₺)": (1 + zm["sonraki_egri"]["getiri"]).cumprod().values,
