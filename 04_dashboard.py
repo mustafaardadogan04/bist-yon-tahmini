@@ -10,6 +10,7 @@ Ogrenme/portfoy projesidir, yatirim tavsiyesi degildir.
 """
 
 import importlib.util
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -40,8 +41,9 @@ def veri_yukle() -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner="Hisse yfinance'ten cekiliyor...")
-def hisse_cek(ticker: str) -> pd.DataFrame:
-    # yeni bir BIST kodunu canli cek (01'in ozellik hattindan gecir).
+def hisse_cek(ticker: str, gun: str) -> pd.DataFrame:
+    # bir BIST kodunu canli cek (01'in ozellik hattindan gecir).
+    # 'gun' cache anahtari: ayni gun icinde tekrar cekmez, ertesi gun yeniler.
     # USD/TRY de dahil: CSV'deki hisselerle ayni ozellik seti olsun
     usdtry = veri.usdtry_degisimi_cek()
     return veri.hisseyi_isle(ticker, usdtry if not usdtry.empty else None)
@@ -85,19 +87,34 @@ tum_veri = veri_yukle()
 # Kenar cubugu
 st.sidebar.header("Ayarlar")
 
+bugun = date.today().isoformat()   # canli cache anahtari (gun basina bir cekim)
+
 mevcut_hisseler = sorted(tum_veri["hisse"].unique()) if not tum_veri.empty else []
 secim = st.sidebar.selectbox(
     "Hisse",
     mevcut_hisseler + ["+ Yeni hisse cek..."] if mevcut_hisseler else ["+ Yeni hisse cek..."],
 )
 
+canli = st.sidebar.checkbox(
+    "🔄 Canli veri (yfinance)", value=False,
+    help="Acikken secili hisse yfinance'ten guncel veriyle cekilir ve model o an "
+         "yeniden egitilir. Kapaliyken repodaki donmus ornek veri kullanilir.")
+
 if secim == "+ Yeni hisse cek...":
     yeni = st.sidebar.text_input("BIST kodu (orn: GARAN.IS)", value="GARAN.IS").strip().upper()
-    df_tek = hisse_cek(yeni) if yeni else pd.DataFrame()
+    df_tek = hisse_cek(yeni, bugun) if yeni else pd.DataFrame()
     hisse_adi = yeni
+elif canli:
+    df_tek = hisse_cek(secim, bugun)   # listedeki hisseyi de canli cek
+    hisse_adi = secim
 else:
     df_tek = tum_veri[tum_veri["hisse"] == secim].copy()
     hisse_adi = secim
+
+if canli:
+    st.sidebar.caption("⚠️ Canli mod: sonuclar guncel veriyle hesaplanir; her gun "
+                       "degisir ve README'deki donmus (2020–2026) sayilarla birebir "
+                       "tutmayabilir. yfinance bulut IP'lerini ara sira engelleyebilir.")
 
 model_ad = st.sidebar.selectbox("Model", list(ml.MODELLER), index=list(ml.MODELLER).index("xgboost"))
 st.sidebar.caption("Varsayilan XGBoost: olculen en verimli model (Sharpe 1.35).")

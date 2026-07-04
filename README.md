@@ -60,7 +60,7 @@ python 01_veri_ve_ozellikler.py --usdtry   # borsa_veri.csv üretir (hazır olan
 streamlit run 04_dashboard.py     # panoyu açar
 ```
 
-Panoda hisse, model ve eğitim/test penceresini seçip güncel sinyali, maliyet sonrası metrikleri ve sermaye eğrisini görebilirsin. İstersen yeni bir BIST kodu girip canlı veri de çekebilirsin.
+Panoda hisse, model ve eğitim/test penceresini seçip güncel sinyali, maliyet sonrası metrikleri ve sermaye eğrisini görebilirsin. Kenar çubuğundaki **🔄 Canlı veri** kutucuğu, seçili hisseyi yfinance'ten güncel veriyle çeker ve modeli o an yeniden eğitir; kapalıyken repodaki donmuş örnek veri kullanılır (README'deki sabit sayılar buna aittir). Yeni bir BIST kodu da girebilirsin.
 
 ## Testler
 
