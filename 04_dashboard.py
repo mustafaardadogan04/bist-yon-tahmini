@@ -154,6 +154,8 @@ egitim = st.sidebar.slider("Egitim penceresi (gun)", 250, 1000, 500, 50)
 test = st.sidebar.slider("Test penceresi (gun)", 20, 120, 60, 10)
 adim = st.sidebar.slider("Kaydirma adimi (gun)", 20, 120, 60, 10)
 maliyet = st.sidebar.slider("Islem maliyeti (binde)", 0.0, 5.0, 1.5, 0.5) / 1000
+sermaye = st.sidebar.number_input("Baslangic sermayesi (₺)", 1000, 10_000_000, 10_000, 1000,
+                                  help="Sermaye egrisi ve sonuc bu tutar uzerinden ₺ olarak gosterilir.")
 
 # --- Zaman makinesi kontrolleri (kenar cubugu) ---
 st.sidebar.divider()
@@ -245,16 +247,26 @@ if zm_kesim is not None:
         }).set_index("tarih")
         st.line_chart(_zegri, height=200)
 
-# Sermaye egrisi
+# Sermaye egrisi — secilen baslangic sermayesi uzerinden ₺
 strat_get = bt.strateji_serisi(oos["tahmin"], oos["ertesi_getiri"], maliyet)
+altut_get = oos["ertesi_getiri"].reset_index(drop=True)
 egri = pd.DataFrame({
     "tarih": pd.to_datetime(oos["tarih"]).reset_index(drop=True),
-    "Strateji": (1 + strat_get).cumprod(),
-    "Al-tut": (1 + oos["ertesi_getiri"].reset_index(drop=True)).cumprod(),
+    "Strateji (₺)": sermaye * (1 + strat_get).cumprod(),
+    "Al-tut (₺)": sermaye * (1 + altut_get).cumprod(),
 }).set_index("tarih")
 
-st.markdown("##### Sermaye egrisi — 1₺ baslangic (maliyet sonrasi)")
+son_strat = sermaye * float((1 + strat_get).prod())
+son_altut = sermaye * float((1 + altut_get).prod())
+def _tl(x):
+    return f"{x:,.0f}".replace(",", ".") + "₺"
+
+st.markdown(f"##### Sermaye eğrisi — {_tl(sermaye)} başlangıç (maliyet sonrası)")
 st.line_chart(egri)
+mp1, mp2, mp3 = st.columns(3)
+mp1.metric("Başlangıç", _tl(sermaye))
+mp2.metric("Strateji sonu", _tl(son_strat), f"{son_strat/sermaye-1:+.0%}")
+mp3.metric("Al-tut sonu", _tl(son_altut), f"{son_altut/sermaye-1:+.0%}")
 
 with st.expander("Yon dogrulugu detayi (F1 / kesinlik / duyarlilik)"):
     d = st.columns(3)
