@@ -39,47 +39,54 @@ def _motoru_yukle():
 bt = _motoru_yukle()
 
 
-# Modeller — hepsi ayni imza: (X_egitim, y_egitim, X_test) -> 0/1 dizisi
-def tahmin_lojistik(X_egitim, y_egitim, X_test) -> np.ndarray:
-    # olceklemeye duyarli, o yuzden StandardScaler'li pipeline
-    model = Pipeline([
-        ("olcek", StandardScaler()),
-        ("lr", LogisticRegression(class_weight="balanced", max_iter=1000)),
-    ])
-    model.fit(X_egitim, y_egitim)
-    return model.predict(X_test)
+# Modeller — hepsi ayni imza. Tek yerde kurulur; hem 0/1 tahmin hem olasilik uretir.
+def _model_kur(ad: str, y_egitim):
+    if ad == "lojistik":
+        # olceklemeye duyarli, o yuzden StandardScaler'li pipeline
+        return Pipeline([
+            ("olcek", StandardScaler()),
+            ("lr", LogisticRegression(class_weight="balanced", max_iter=1000)),
+        ])
+    if ad == "xgboost":
+        # max_depth=3: kucuk veride asiri ogrenmeyi engelle
+        pozitif = max(int((y_egitim == 1).sum()), 1)
+        negatif = int((y_egitim == 0).sum())
+        return xgb.XGBClassifier(
+            n_estimators=200, max_depth=3, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8,
+            scale_pos_weight=negatif / pozitif,
+            eval_metric="logloss", n_jobs=-1, verbosity=0,
+        )
+    if ad == "lightgbm":
+        return lgb.LGBMClassifier(
+            n_estimators=200, max_depth=3, num_leaves=15,
+            learning_rate=0.05, min_child_samples=20,
+            subsample=0.8, colsample_bytree=0.8,
+            class_weight="balanced", n_jobs=-1, verbose=-1,
+        )
+    raise ValueError(f"bilinmeyen model: {ad}")
 
 
-def tahmin_xgboost(X_egitim, y_egitim, X_test) -> np.ndarray:
-    # max_depth=3: kucuk veride asiri ogrenmeyi engelle
-    pozitif = max(int((y_egitim == 1).sum()), 1)
-    negatif = int((y_egitim == 0).sum())
-    model = xgb.XGBClassifier(
-        n_estimators=200, max_depth=3, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8,
-        scale_pos_weight=negatif / pozitif,
-        eval_metric="logloss", n_jobs=-1, verbosity=0,
-    )
-    model.fit(X_egitim, y_egitim)
-    return model.predict(X_test)
+def _tahminci(ad):
+    # (X_egitim, y_egitim, X_test) -> 0/1 dizisi  (walk_forward'in bekledigi imza)
+    def f(X_egitim, y_egitim, X_test) -> np.ndarray:
+        model = _model_kur(ad, y_egitim)
+        model.fit(X_egitim, y_egitim)
+        return model.predict(X_test)
+    return f
 
 
-def tahmin_lightgbm(X_egitim, y_egitim, X_test) -> np.ndarray:
-    model = lgb.LGBMClassifier(
-        n_estimators=200, max_depth=3, num_leaves=15,
-        learning_rate=0.05, min_child_samples=20,
-        subsample=0.8, colsample_bytree=0.8,
-        class_weight="balanced", n_jobs=-1, verbose=-1,
-    )
-    model.fit(X_egitim, y_egitim)
-    return model.predict(X_test)
+def _olasilikci(ad):
+    # (X_egitim, y_egitim, X_test) -> P(yukselir) olasilik dizisi  (portfoy siralamasi icin)
+    def f(X_egitim, y_egitim, X_test) -> np.ndarray:
+        model = _model_kur(ad, y_egitim)
+        model.fit(X_egitim, y_egitim)
+        return model.predict_proba(X_test)[:, 1]
+    return f
 
 
-MODELLER = {
-    "lojistik": tahmin_lojistik,
-    "xgboost": tahmin_xgboost,
-    "lightgbm": tahmin_lightgbm,
-}
+MODELLER = {ad: _tahminci(ad) for ad in ("lojistik", "xgboost", "lightgbm")}
+OLASILIKLAR = {ad: _olasilikci(ad) for ad in ("lojistik", "xgboost", "lightgbm")}
 
 
 def modeli_kosur(ad, tahminci, df, egitim, test, adim, genisleyen) -> None:

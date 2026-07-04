@@ -68,47 +68,82 @@ def guncel_sinyal(df_tek: pd.DataFrame, model_ad: str):
 
 
 @st.cache_data(show_spinner=False)
-def _zm_tahmin(df_tek: pd.DataFrame, model_ad: str, kesim_iso: str):
-    # ZAMAN MAKINESI (pahali kisim, cache'li): modeli kesim tarihine kadarki veriyle
-    # BIR KEZ egit, sonra o gunden itibaren gunluk sinyalleri uret. Egitim yalniz
-    # kesim'den ONCEKI veriyle -> gelecekten sizinti yok. (sermaye/maliyetten bagimsiz)
-    df2 = bt.ertesi_getiri_ekle(df_tek.sort_values("tarih").reset_index(drop=True))
+def _portfoy_ham(df_coklu: pd.DataFrame, model_ad: str, kesim_iso: str, k: int):
+    # PORTFOY (pahali kisim, cache'li): her hisseyi kesim tarihine kadarki veriyle egit,
+    # sonra o gunden bugune her gun yukselis olasiligi uret. Egitim yalniz kesim'den
+    # ONCEKI veriyle -> sizinti yok. (sermaye/maliyetten bagimsiz)
     kesim = pd.Timestamp(kesim_iso)
-    ozellik = [k for k in df2.columns if k not in bt.META_KOLONLAR]
-    egitim = df2[df2["tarih"] < kesim]
-    pencere = df2[df2["tarih"] >= kesim].reset_index(drop=True)   # kesim gununden bugune
-    if len(egitim) < 100 or len(pencere) < 5:
+    gunluk = {}   # tarih -> {hisse: (olasilik, ertesi_getiri)}
+    for h, d in df_coklu.groupby("hisse"):
+        d2 = bt.ertesi_getiri_ekle(d.sort_values("tarih").reset_index(drop=True))
+        ozellik = [c for c in d2.columns if c not in bt.META_KOLONLAR]
+        egitim = d2[d2["tarih"] < kesim]
+        pencere = d2[d2["tarih"] >= kesim]
+        if len(egitim) < 100 or len(pencere) < 5:
+            continue
+        proba = ml.OLASILIKLAR[model_ad](egitim[ozellik], egitim["hedef"], pencere[ozellik])
+        for t, p, g in zip(pencere["tarih"], proba, pencere["ertesi_getiri"]):
+            gunluk.setdefault(t, {})[h] = (float(p), float(g))
+    if not gunluk:
         return None
-    tahmin = ml.MODELLER[model_ad](egitim[ozellik], egitim["hedef"], pencere[ozellik])
-    return {
-        "tarih": pencere["tarih"],
-        "pozisyon": pd.Series(tahmin),
-        "ertesi_getiri": pencere["ertesi_getiri"].reset_index(drop=True),
-        "hedef": pencere["hedef"].reset_index(drop=True),
-    }
+    tarihler = sorted(gunluk)
+    onceki = set()
+    port_ham, turnover, bench = [], [], []
+    for t in tarihler:
+        adaylar = sorted(gunluk[t].items(), key=lambda x: -x[1][0])   # olasiliga gore
+        secili = [(h, pg) for h, pg in adaylar if pg[0] > 0.5][:k]     # en iyi k AL
+        sset = {h for h, _ in secili}
+        port_ham.append(sum(pg[1] for _, pg in secili) / len(secili) if secili else 0.0)
+        turnover.append(len(sset ^ onceki) / max(k, 1))   # degisen pozisyon orani
+        onceki = sset
+        gt = [pg[1] for pg in gunluk[t].values()]
+        bench.append(sum(gt) / len(gt))                    # hepsini esit tut (al-tut)
+    return {"tarih": [pd.Timestamp(t) for t in tarihler],
+            "port_ham": port_ham, "turnover": turnover, "bench": bench}
 
 
-def zaman_makinesi(df_tek, model_ad, kesim_iso, sermaye, maliyet):
-    # ucuz kisim: egitilmis tahminlere maliyet + sermaye uygula (portfoy senaryosu)
-    r = _zm_tahmin(df_tek, model_ad, kesim_iso)
+def portfoy_gecmis(df_coklu, model_ad, kesim_iso, sermaye, maliyet, k):
+    # ucuz kisim: maliyet (turnover) + sermaye uygula
+    r = _portfoy_ham(df_coklu, model_ad, kesim_iso, k)
     if r is None:
         return None
-    strat_get = bt.strateji_serisi(r["pozisyon"], r["ertesi_getiri"], maliyet)
-    altut_get = r["ertesi_getiri"]
+    port = pd.Series(r["port_ham"]) - maliyet * pd.Series(r["turnover"])
+    bench = pd.Series(r["bench"])
     return {
-        "baslangic": r["tarih"].iloc[0],
-        "gun": len(r["pozisyon"]),
-        "al_gunu": int(r["pozisyon"].sum()),   # kac gun AL (pozisyonda) kalindi
-        "strat_son": sermaye * float((1 + strat_get).prod()),
-        "altut_son": sermaye * float((1 + altut_get).prod()),
-        "strat_getiri": float((1 + strat_get).prod() - 1),
-        "altut_getiri": float((1 + altut_get).prod() - 1),
+        "gun": len(r["tarih"]),
+        "baslangic": r["tarih"][0],
+        "port_son": sermaye * float((1 + port).prod()),
+        "bench_son": sermaye * float((1 + bench).prod()),
+        "port_getiri": float((1 + port).prod() - 1),
+        "bench_getiri": float((1 + bench).prod() - 1),
         "egri": pd.DataFrame({
-            "tarih": r["tarih"].values,
-            "Strateji": (sermaye * (1 + strat_get).cumprod()).values,
-            "Al-tut": (sermaye * (1 + altut_get).cumprod()).values,
-        }),
+            "tarih": r["tarih"],
+            f"Portföy (en iyi {k})": (sermaye * (1 + port).cumprod()).values,
+            "Al-tut (hepsi eşit)": (sermaye * (1 + bench).cumprod()).values,
+        }).set_index("tarih"),
     }
+
+
+@st.cache_data(show_spinner=False)
+def bugun_tarama(df_coklu: pd.DataFrame, model_ad: str):
+    # her hisse icin TUM veriyle egit, EN SON gunu tahmin et; olasiliga gore sirala
+    sonuc = []
+    for h, d in df_coklu.groupby("hisse"):
+        d = d.sort_values("tarih").reset_index(drop=True)
+        d2 = bt.ertesi_getiri_ekle(d)   # hedefi bilinmeyen son gun burada duser
+        ozellik = [c for c in d2.columns if c not in bt.META_KOLONLAR]
+        if len(d2) < 100:
+            continue
+        son = d.iloc[[-1]]
+        p = float(ml.OLASILIKLAR[model_ad](d2[ozellik], d2["hedef"], son[ozellik])[0])
+        sonuc.append({"Hisse": h.replace(".IS", ""),
+                      "Yükseliş olasılığı": p,
+                      "Sinyal": "🟢 AL" if p > 0.5 else "⚪ BEKLE"})
+    if not sonuc:
+        return pd.DataFrame()
+    return (pd.DataFrame(sonuc)
+            .sort_values("Yükseliş olasılığı", ascending=False)
+            .reset_index(drop=True))
 
 
 st.set_page_config(page_title="BIST Hibrit Tahmin", page_icon="📈", layout="wide")
@@ -134,10 +169,9 @@ st.sidebar.header("Ayarlar")
 bugun = date.today().isoformat()   # canli cache anahtari (gun basina bir cekim)
 
 mevcut_hisseler = sorted(tum_veri["hisse"].unique()) if not tum_veri.empty else []
-secim = st.sidebar.selectbox(
-    "Hisse",
-    mevcut_hisseler + ["+ Yeni hisse cek..."] if mevcut_hisseler else ["+ Yeni hisse cek..."],
-)
+_secenekler = (mevcut_hisseler + ["+ Yeni hisse cek..."]) if mevcut_hisseler else ["+ Yeni hisse cek..."]
+_vars_idx = _secenekler.index("THYAO.IS") if "THYAO.IS" in _secenekler else 0
+secim = st.sidebar.selectbox("Hisse (Özet sekmesi için)", _secenekler, index=_vars_idx)
 
 canli = st.sidebar.checkbox(
     "🔄 Canli veri (yfinance)", value=False,
@@ -172,31 +206,21 @@ with st.sidebar.expander("⚙️ Pencere ayarları (gelişmiş)"):
     test = st.slider("Test penceresi (gün)", 20, 120, 60, 10)
     adim = st.slider("Kaydırma adımı (gün)", 20, 120, 60, 10)
 
-# --- Zaman makinesi kontrolleri (kenar cubugu) ---
+# --- Portfoy kontrolleri (kenar cubugu; cok hisse) ---
 st.sidebar.divider()
-st.sidebar.subheader("🕰 Geçmiş tarih testi")
-zm_secim = st.sidebar.selectbox(
-    "Modeli hangi güne götürelim?",
-    ["(kapalı)", "1 ay önce", "2 ay önce", "3 ay önce", "6 ay önce", "Tarih seç..."],
-    help="Model yalnızca o tarihe kadarki veriyle eğitilir (sızıntı yok), o gün AL/BEKLE "
-         "der; sonra gerçekte ne olduğunu ortaya çıkarırız.")
+st.sidebar.subheader("💼 Portföy (çok hisse)")
+port_k = st.sidebar.slider("Kaç hisse tutulsun (en iyi K)", 1, 8, 3,
+                           help="Model her gün en güvendiği K hisseyi eşit ağırlıkla tutar.")
+port_secim = st.sidebar.selectbox(
+    "Geçmiş senaryo: hangi güne?",
+    ["(kapalı)", "1 ay önce", "2 ay önce", "3 ay önce", "6 ay önce", "1 yıl önce"],
+    help="Seçilen tarihe kadar eğit, o günden bugüne portföyü modelin sinyalleriyle yürüt.")
 
-zm_kesim = None
-if zm_secim != "(kapalı)" and not df_tek.empty:
-    _son = pd.to_datetime(df_tek["tarih"]).max()
-    _ilk = pd.to_datetime(df_tek["tarih"]).min()
-    if zm_secim == "Tarih seç...":
-        _tmin = (_ilk + pd.Timedelta(days=400)).date()   # egitim icin yer birak
-        _tmax = (_son - pd.Timedelta(days=35)).date()     # ortaya cikarma icin yer birak
-        if _tmin < _tmax:
-            zm_kesim = st.sidebar.date_input("Kesim tarihi",
-                                             value=(_son - pd.Timedelta(days=150)).date(),
-                                             min_value=_tmin, max_value=_tmax)
-        else:
-            st.sidebar.info("Veri aralığı bu test için çok kısa.")
-    else:
-        _ay = {"1 ay önce": 1, "2 ay önce": 2, "3 ay önce": 3, "6 ay önce": 6}[zm_secim]
-        zm_kesim = (_son - pd.DateOffset(months=_ay)).date()
+port_kesim = None
+if port_secim != "(kapalı)" and not tum_veri.empty:
+    _son = tum_veri["tarih"].max()
+    _ay = {"1 ay önce": 1, "2 ay önce": 2, "3 ay önce": 3, "6 ay önce": 6, "1 yıl önce": 12}[port_secim]
+    port_kesim = (_son - pd.DateOffset(months=_ay)).date()
 
 if df_tek.empty or len(df_tek) < egitim + test:
     st.warning("Yeterli veri yok. Farkli bir hisse sec ya da egitim/test penceresini kucult.")
@@ -231,10 +255,10 @@ elif sinyal == 0:
 else:
     st.write("Sinyal hesaplanamadı.")
 
-sekme_ozet, sekme_zaman, sekme_detay = st.tabs(
-    ["📊 Özet", "🕰 Geçmiş tarih testi", "🔍 Model detayı"])
+sekme_ozet, sekme_portfoy, sekme_detay = st.tabs(
+    ["📊 Özet (tek hisse)", "💼 Portföy (çok hisse)", "🔍 Model detayı"])
 
-# --- SEKME 1: OZET ---
+# --- SEKME 1: OZET (tek hisse) ---
 with sekme_ozet:
     m = st.columns(4)
     m[0].metric("Strateji getirisi", f"{strat['kumulatif_getiri']:+.0%}")
@@ -250,39 +274,55 @@ with sekme_ozet:
     st.markdown("##### Sermaye eğrisi — başlangıç = 1 kat (maliyet sonrası)")
     st.line_chart(egri)
     st.caption(f"{len(oos)} örnek-dışı gün · {strat['islem_sayisi']} işlem · "
-               "al-tut ile aynı dönemde karşılaştırıldı. Somut ₺ karşılığı için "
-               "→ **🕰 Geçmiş tarih testi** sekmesi.")
+               "al-tut ile aynı dönemde karşılaştırıldı. Para ile çok-hisse senaryosu "
+               "→ **💼 Portföy** sekmesi.")
 
-# --- SEKME 2: ZAMAN MAKINESI ---
-with sekme_zaman:
-    if zm_kesim is None:
-        st.info("← Kenar çubuğundaki **🕰 Geçmiş tarih testi** menüsünden bir zaman seç "
-                "(örn. *2 ay önce*). Model o güne kadarki veriyle eğitilip ne diyeceğini, "
-                "sonra gerçekte ne olduğunu gösterir.")
+# --- SEKME 2: PORTFOY (cok hisse) ---
+with sekme_portfoy:
+    if tum_veri.empty or tum_veri["hisse"].nunique() < 2:
+        st.info("Portföy için birden çok hisse gerekir. `borsa_veri.csv`'yi çok hisseli üret "
+                "(`01_veri_ve_ozellikler.py --hisseler THYAO.IS GARAN.IS ... --usdtry`).")
     else:
-        st.markdown(f"##### Bu modelle {pd.Timestamp(zm_kesim):%d.%m.%Y} tarihinde başlasaydın")
-        with st.spinner("Model o tarihe kadarki veriyle eğitiliyor..."):
-            zm = zaman_makinesi(df_tek, model_ad, pd.Timestamp(zm_kesim).isoformat(),
-                                sermaye, maliyet)
-        if zm is None:
-            st.warning("Bu tarih için yeterli veri yok — daha ortada bir zaman seç.")
+        # A) Bugun tarama
+        st.markdown("##### 📅 Bugün — model hangi hisselerde AL diyor?")
+        with st.spinner(f"{tum_veri['hisse'].nunique()} hisse taranıyor..."):
+            tar = bugun_tarama(tum_veri, model_ad)
+        if tar.empty:
+            st.warning("Tarama üretilemedi.")
         else:
-            z1, z2, z3 = st.columns(3)
-            z1.metric(f"Strateji ({zm['gun']} işlem günü)", _tl(zm["strat_son"]),
-                      f"{zm['strat_getiri']:+.1%}")
-            z2.metric("Al-tut (kıyas)", _tl(zm["altut_son"]), f"{zm['altut_getiri']:+.1%}")
-            z3.metric("Pozisyonda", f"{zm['al_gunu']} / {zm['gun']} gün",
-                      help="Modelin AL dediği (hisse tuttuğu) gün sayısı. Kalan günler nakitte.")
-            st.line_chart(zm["egri"].set_index("tarih"))
-            _not = ""
-            if zm["al_gunu"] == 0:
-                _not = " Model bu dönemde hiç AL demedi, yani hep nakitte kaldı — o yüzden strateji düz."
-            elif zm["strat_getiri"] < zm["altut_getiri"]:
-                _not = " Bu kısa pencerede al-tut'u geçemedi; kısa dönem gürültülüdür, genel resim → Özet."
-            st.caption(f"💰 {_tl(sermaye)} ile {zm['baslangic']:%d.%m.%Y}'te başlayıp modelin günlük "
-                       "sinyalleriyle yönetildi (AL → tut, BEKLE → nakit). Nakitte geçen gün ne "
-                       "kazandırır ne kaybettirir." + _not +
-                       " Model yalnızca kesim tarihine kadarki veriyle eğitildi — sızıntı yok.")
+            al_sayi = int(tar["Sinyal"].str.contains("AL").sum())
+            st.dataframe(tar, use_container_width=True, hide_index=True,
+                         column_config={"Yükseliş olasılığı": st.column_config.ProgressColumn(
+                             "Yükseliş olasılığı", format="%.0f%%", min_value=0, max_value=1)})
+            st.caption(f"Yarın için tahmin · **{al_sayi} hissede AL** sinyali. En üsttekiler "
+                       "modelin en güvendiği (= en çok artması beklenen).")
+
+        st.divider()
+        # B) Gecmis senaryo
+        st.markdown("##### 🕰 Geçmiş senaryo — bu portföyle başlasaydın")
+        if port_kesim is None:
+            st.info("← Kenar çubuğundaki **💼 Portföy → Geçmiş senaryo** menüsünden bir zaman "
+                    "seç (örn. *6 ay önce*). Model her hisse için o güne kadar eğitilir, sonra "
+                    "her gün en güvendiği hisseler tutulur.")
+        else:
+            with st.spinner("Model her hisse için o güne kadar eğitiliyor..."):
+                pg = portfoy_gecmis(tum_veri, model_ad, pd.Timestamp(port_kesim).isoformat(),
+                                    sermaye, maliyet, port_k)
+            if pg is None:
+                st.warning("Bu tarih için yeterli veri yok — daha yakın bir zaman seç.")
+            else:
+                p1, p2, p3 = st.columns(3)
+                p1.metric(f"Portföy (en iyi {port_k})", _tl(pg["port_son"]),
+                          f"{pg['port_getiri']:+.1%}")
+                p2.metric("Al-tut (hepsi eşit)", _tl(pg["bench_son"]), f"{pg['bench_getiri']:+.1%}")
+                p3.metric("Süre", f"{pg['gun']} işlem günü")
+                st.line_chart(pg["egri"])
+                _fark = ("Portföy al-tut'u geçti 👍" if pg["port_getiri"] > pg["bench_getiri"]
+                         else "Bu dönemde al-tut'u geçemedi — geniş boğada seçicilik çoğu zaman "
+                              "geniş tutmayı yenmez (projenin tezine uygun).")
+                st.caption(f"💰 {_tl(sermaye)} ile {pg['baslangic']:%d.%m.%Y}'te başlayıp model her "
+                           f"gün en güvendiği {port_k} AL hissesini eşit tuttu. Al-tut = 15 hisseyi "
+                           f"eşit tutmak. {_fark} Model kesim öncesi veriyle eğitildi — sızıntı yok.")
 
 # --- SEKME 3: MODEL DETAYI ---
 with sekme_detay:
