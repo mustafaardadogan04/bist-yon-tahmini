@@ -100,6 +100,23 @@ def test_walk_forward_test_hep_egitimin_geleceginde():
     assert oos["tarih"].iloc[0] == df["tarih"].iloc[100]      # ilk test gunu 101. gun
 
 
+def test_walk_forward_kuyruk_sona_ulasir():
+    # tam pencerelere sigmayan kuyruk da kapsanmali (OOS verinin sonuna ulasmali)
+    n = 210
+    df = pd.DataFrame({
+        "tarih": pd.date_range("2020-01-01", periods=n, freq="D"),
+        "hisse": "TEST",
+        "ozellik": np.arange(n, dtype=float),
+        "hedef": np.zeros(n, dtype=int),
+        "ertesi_getiri": np.zeros(n),
+    })
+    oos = bt.walk_forward(df, lambda a, b, c: np.zeros(len(c), dtype=int),
+                          100, 20, 20, genisleyen=False)
+    # 5 tam pencere (100..200) + kuyruk (200..210) = 110 gun
+    assert len(oos) == 110
+    assert oos["tarih"].iloc[-1] == df["tarih"].iloc[-1]      # son OOS gunu = verinin son gunu
+
+
 # --- 01: gostergeler ve hedef ------------------------------------------------
 
 def test_rsi_uclarda_dogru_davranir():

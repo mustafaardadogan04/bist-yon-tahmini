@@ -123,6 +123,18 @@ def walk_forward(df, tahminci, egitim_penceresi, test_penceresi, adim, genisleye
 
         baslangic += adim
 
+    # Son tam pencereden sonra kalan gunler (kisa kuyruk) kapsanmazdi -> OOS bugune
+    # kadar ulassin diye bir artik pencere ekle (test tam boyuta ulasmasa da).
+    if baslangic < n:
+        egitim_basi = 0 if genisleyen else baslangic - egitim_penceresi
+        egitim = df.iloc[egitim_basi:baslangic]
+        test = df.iloc[baslangic:n]
+        if len(egitim) >= 50 and len(test) > 0:
+            tahmin = tahminci(egitim[ozellik_kolonlari], egitim["hedef"], test[ozellik_kolonlari])
+            sonuc = test[["tarih", "hisse", "hedef", "ertesi_getiri"]].copy()
+            sonuc["tahmin"] = tahmin
+            parcalar.append(sonuc)
+
     if not parcalar:
         return pd.DataFrame()
     return pd.concat(parcalar, ignore_index=True)
