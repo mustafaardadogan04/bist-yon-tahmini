@@ -199,14 +199,12 @@ with st.spinner("Hesaplaniyor..."):
     sinif = bt.siniflandirma_metrikleri(oos["hedef"].to_numpy(), oos["tahmin"].to_numpy())
     sinyal, sinyal_tarih = guncel_sinyal(df_tek, model_ad)
 
-# --- Para metriklerini tek yerde hazirla (₺ + %) ---
+# --- Strateji getiri serileri ---
 strat_get = bt.strateji_serisi(oos["tahmin"], oos["ertesi_getiri"], maliyet)
 altut_get = oos["ertesi_getiri"].reset_index(drop=True)
-son_strat = sermaye * float((1 + strat_get).prod())
-son_altut = sermaye * float((1 + altut_get).prod())
 
 
-def _tl(x):
+def _tl(x):   # ₺ bicimleme — yalnizca zaman makinesi (gecmis yatirim) icin
     return f"{x:,.0f}".replace(",", ".") + "₺"
 
 
@@ -226,20 +224,21 @@ sekme_ozet, sekme_zaman, sekme_detay = st.tabs(
 # --- SEKME 1: OZET ---
 with sekme_ozet:
     m = st.columns(4)
-    m[0].metric("Strateji sonu", _tl(son_strat), f"{son_strat/sermaye-1:+.0%}")
-    m[1].metric("Al-tut (kıyas)", _tl(son_altut), f"{son_altut/sermaye-1:+.0%}")
+    m[0].metric("Strateji getirisi", f"{strat['kumulatif_getiri']:+.0%}")
+    m[1].metric("Al-tut (kıyas)", f"{strat['al_tut_getiri']:+.0%}")
     m[2].metric("Yıllık Sharpe", f"{strat['yillik_sharpe']:.2f}")
     m[3].metric("Maks düşüş", f"{strat['maks_dusus']:.1%}")
 
     egri = pd.DataFrame({
         "tarih": pd.to_datetime(oos["tarih"]).reset_index(drop=True),
-        "Strateji (₺)": sermaye * (1 + strat_get).cumprod(),
-        "Al-tut (₺)": sermaye * (1 + altut_get).cumprod(),
+        "Strateji": (1 + strat_get).cumprod(),
+        "Al-tut": (1 + altut_get).cumprod(),
     }).set_index("tarih")
-    st.markdown(f"##### Sermaye eğrisi — {_tl(sermaye)} başlangıç (maliyet sonrası)")
+    st.markdown("##### Sermaye eğrisi — başlangıç = 1 kat (maliyet sonrası)")
     st.line_chart(egri)
     st.caption(f"{len(oos)} örnek-dışı gün · {strat['islem_sayisi']} işlem · "
-               "al-tut ile aynı dönemde karşılaştırıldı.")
+               "al-tut ile aynı dönemde karşılaştırıldı. Somut ₺ karşılığı için "
+               "→ **🕰 Geçmiş tarih testi** sekmesi.")
 
 # --- SEKME 2: ZAMAN MAKINESI ---
 with sekme_zaman:
