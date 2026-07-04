@@ -1,5 +1,7 @@
 # BIST Yön Tahmini + Model Portföyü
 
+### 🚀 [Canlı demo](https://bist-yon-tahmini-zpmmjrz7ffquxdytekm2jd.streamlit.app/) · Streamlit Cloud
+
 > 🇬🇧 **English summary** — Next-day direction prediction for 15 Borsa Istanbul stocks from technical indicators, built around one idea: an **honest evaluation**. Walk-forward backtesting (no look-ahead leakage), transaction costs deducted, every result benchmarked against buy & hold, and directional accuracy always shown next to the majority base rate. On THYAO, out-of-sample XGBoost reaches **60.5% accuracy, Sharpe 1.25, +552%** (vs a naive RSI bot's +82% on the same honest terms). A Streamlit app adds a **model portfolio**: pick a past date and money, and the model decides *which* stocks and *how many* to buy-and-hold — beating "hold everything" in every period tested. Includes unit tests + CI. Educational project, not financial advice.
 
 Borsa İstanbul hisseleri için teknik göstergelerle "yarın yükselir mi?" tahmini yapan bir proje. Derdim yüksek getiri değil, **dürüst bir değerlendirme** kurmaktı: çoğu borsa/ML projesi veri sızıntısı, atlanan işlem maliyeti ve eksik kıyaslar yüzünden gerçek olmayan sonuçlar gösteriyor — ben bunların hepsinden kaçınmaya çalıştım.
