@@ -53,6 +53,14 @@ def hisse_cek(ticker: str, gun: str) -> pd.DataFrame:
     return veri.hisseyi_isle(ticker, usdtry if not usdtry.empty else None)
 
 
+@st.cache_data(show_spinner="Hisseler yfinance'ten güncel çekiliyor...")
+def coklu_canli(hisseler: tuple, gun: str) -> pd.DataFrame:
+    # birden cok hisseyi canli cekip birlestir (portfoy icin). Gunde bir cekim.
+    parcalar = [hisse_cek(h, gun) for h in hisseler]
+    parcalar = [p for p in parcalar if not p.empty]
+    return pd.concat(parcalar, ignore_index=True) if parcalar else pd.DataFrame()
+
+
 @st.cache_data(show_spinner=False)
 def backtest_calistir(df_tek: pd.DataFrame, model_ad: str,
                       egitim: int, test: int, adim: int) -> pd.DataFrame:
@@ -99,8 +107,10 @@ def _portfoy_ham(df_secili: pd.DataFrame, model_ad: str, kesim_iso: str):
             "proba": {h: P[h].fillna(0.0).tolist() for h in P.columns}}
 
 
-def portfoy_test(df_secili, model_ad, kesim_iso, sermaye, maliyet, tarz, k):
-    # ucuz kisim: secili tarza gore portfoyu kur (aktif = gunluk gecis, al_tut = bastaki en iyi K)
+def portfoy_test(df_secili, model_ad, kesim_iso, sermaye, maliyet, k=None):
+    # AL VE TUT: kesim gununde modelin secitigi hisseleri al, sona kadar esit tut.
+    # k=None -> modelin kendisi karar verir (guvendigi tum hisseler). k=int -> sabit K.
+    # Satis yok (sadece bir kez giris maliyeti). Grafik yalniz tutulan hisseleri gosterir.
     r = _portfoy_ham(df_secili, model_ad, kesim_iso)
     if r is None:
         return None
@@ -108,46 +118,37 @@ def portfoy_test(df_secili, model_ad, kesim_iso, sermaye, maliyet, tarz, k):
     G = pd.DataFrame(r["getiri"], index=tarihler)
     P = pd.DataFrame(r["proba"], index=tarihler)
 
-    if tarz == "aktif":
-        # her gun en guvendigi AL hisseye yuklen; ayni kalirsa maliyet yok
-        al = P.where(P > 0.5)
-        gecerli = al.notna().any(axis=1)
-        en_iyi = pd.Series(pd.NA, index=al.index, dtype=object)
-        en_iyi.loc[gecerli] = al.loc[gecerli].idxmax(axis=1)
-        port_get, turnover, secili = [], [], []
-        onceki = None
-        for t in G.index:
-            h = en_iyi.loc[t]
-            if pd.isna(h):
-                port_get.append(0.0); turnover.append(1 if onceki else 0); onceki = None
-                secili.append("Nakit")
-            else:
-                port_get.append(float(G.loc[t, h]))
-                turnover.append(0 if h == onceki else 1); onceki = h
-                secili.append(h)
-        port = pd.Series(port_get, index=G.index) - maliyet * pd.Series(turnover, index=G.index)
-        tutulan = pd.Series(secili).value_counts()
-        aciklama = f"Model her gün en güvendiği AL hissesine geçti. En çok: "
+    ilk = P.iloc[0].sort_values(ascending=False)     # kesim gunundeki guven sirasi
+    if k is None:
+        # MODEL KARAR VERSIN: guvendigi (>0.5) tum hisseler; hicbiri yoksa en iyi 1
+        secilen = list(ilk[ilk > 0.5].index) or [ilk.index[0]]
     else:
-        # AL VE TUT: kesimdeki (ilk gun) en guvendigi K hisseyi al, sona kadar esit tut
-        ilk = P.iloc[0].sort_values(ascending=False)
-        secilen = list(ilk.head(k).index)
-        port = G[secilen].mean(axis=1).copy()
-        port.iloc[0] -= maliyet          # sadece bir kez giris maliyeti
-        tutulan = pd.Series({h: len(G) for h in secilen})
-        aciklama = f"Kesim gününde modelin en güvendiği {len(secilen)} hisse alınıp tutuldu: "
+        secilen = list(ilk.head(k).index)            # kullanici K'yi sabitledi
+    port = G[secilen].mean(axis=1).copy()            # esit agirlik, tutulur
+    port.iloc[0] -= maliyet                           # tek giris maliyeti
+    bench = G.mean(axis=1)                            # kiyas: tum secilenleri esit tut
 
-    egri = {h: (sermaye * (1 + pd.Series(gl)).cumprod()).values for h, gl in r["getiri"].items()}
+    egri = {h: (sermaye * (1 + G[h]).cumprod()).values for h in secilen}   # tutulan hisseler
     egri["★ Model portföy"] = (sermaye * (1 + port.values).cumprod())
+    if len(G.columns) > len(secilen):                # kiyas ancak fazladan hisse varsa anlamli
+        egri["Al-tut (tümü)"] = (sermaye * (1 + bench.values).cumprod())
     egri_df = pd.DataFrame(egri, index=tarihler)
-    bench = pd.DataFrame(r["getiri"]).mean(axis=1)
+
+    # Gunluk log: gun gun ne oldu (portfoy getirisi, para, her hissenin hareketi)
+    gunluk = pd.DataFrame(index=tarihler.strftime("%d.%m.%Y"))
+    gunluk.index.name = "Tarih"
+    gunluk["Model günlük %"] = (port.values * 100).round(2)
+    gunluk["Para (₺)"] = (sermaye * (1 + port.values).cumprod()).round(0).astype(int)
+    for h in secilen:
+        gunluk[f"{h} %"] = (G[h].values * 100).round(2)
+
     return {
-        "gun": len(tarihler), "baslangic": tarihler[0],
+        "gun": len(tarihler), "baslangic": tarihler[0], "secilen": secilen,
         "model_son": sermaye * float((1 + port.values).prod()),
         "model_getiri": float((1 + port.values).prod() - 1),
         "bench_son": sermaye * float((1 + bench.values).prod()),
         "bench_getiri": float((1 + bench.values).prod() - 1),
-        "egri": egri_df, "tutulan": tutulan, "aciklama": aciklama,
+        "egri": egri_df, "gunluk": gunluk,
     }
 
 
@@ -248,63 +249,81 @@ with sekme_gecmis:
         st.info("Bu özellik için `borsa_veri.csv` çok hisseli olmalı "
                 "(`01_veri_ve_ozellikler.py --hisseler THYAO.IS GARAN.IS ... --usdtry`).")
     else:
-        st.markdown("#### Geçmişe git, parayı en iyi hisselerle büyütmeyi dene")
-        g1, g2, g3 = st.columns([2, 1, 1])
+        st.markdown("#### Geçmişe git, model senin için en iyi hisseleri seçsin")
+        st.caption(f"Model, {len(hisse_listesi)} hissenin hepsine bakar; hangilerini ve "
+                   "**kaç tanesini** alacağına kendisi karar verir. Sen sadece para ve zamanı söylersin.")
+
+        canli_pf = st.checkbox("🔄 Canlı veri (yfinance'ten güncel çek)", value=False,
+                               help="Açıkken tüm hisseler yfinance'ten güncel çekilir (biraz "
+                                    "sürer). Kapalıyken repodaki donmuş örnek veri kullanılır.")
+        if canli_pf:
+            pf_veri = coklu_canli(tuple(hisse_listesi), bugun)
+            if pf_veri.empty:
+                st.warning("Canlı veri çekilemedi (yfinance engellemiş olabilir). Donmuş "
+                           "veriye dönülüyor.")
+                pf_veri = tum_veri
+            else:
+                st.caption("⚠️ Canlı mod: sonuçlar güncel veriyle hesaplanır, her gün değişir.")
+        else:
+            pf_veri = tum_veri
+
         temizle = lambda s: s.replace(".IS", "")
-        varsayilan = [h for h in ["THYAO.IS", "GARAN.IS", "ASELS.IS", "BIMAS.IS", "TUPRS.IS"]
-                      if h in hisse_listesi]
-        secili = g1.multiselect("Hisseler (istediğin kadar)", hisse_listesi,
-                                default=varsayilan, format_func=temizle)
-        para = g2.number_input("Para (₺)", 1000, 10_000_000, 10_000, 1000)
-        zaman = g3.selectbox("Ne zaman başlasın?",
+        g1, g2 = st.columns(2)
+        para = g1.number_input("Para (₺)", 1000, 10_000_000, 10_000, 1000)
+        zaman = g2.selectbox("Ne zaman başlasın?",
                              ["1 ay önce", "3 ay önce", "6 ay önce", "1 yıl önce", "2 yıl önce"],
                              index=2)
 
-        h1, h2 = st.columns([2, 1])
-        tarz_etiket = h1.radio(
-            "İşlem tarzı",
-            ["🔄 Günlük aktif — her gün en güvendiğine geç",
-             "📌 Al ve tut — baştaki en iyi K hisseyi tut"],
-            help="Aktif: sık al-sat (maliyet yüksek). Al-tut: baştan seçip tutar (maliyet ~yok).")
-        tarz = "aktif" if tarz_etiket.startswith("🔄") else "al_tut"
-        port_k = h2.slider("Al-tut: kaç hisse?", 1, 8, 3, disabled=(tarz == "aktif"))
+        # Varsayilan: model kendi karar verir + tum hisseler havuz. Isteyen degistirebilir.
+        with st.expander("🔧 İsteğe bağlı ayarlar"):
+            secili = st.multiselect("Model yalnızca bunlar arasından seçsin (varsayılan: tümü)",
+                                    hisse_listesi, default=hisse_listesi, format_func=temizle)
+            k_sabit = st.checkbox("Kaç hisse tutacağını ben belirleyeyim")
+            k_deger = st.slider("En iyi K hisse", 1, 8, 3, disabled=not k_sabit)
+        if not secili:
+            secili = hisse_listesi
+        port_k = k_deger if k_sabit else None      # None -> model kendi karar verir
 
         if st.button("▶ Hesapla", type="primary"):
             st.session_state["pf_calistir"] = True
 
         if st.session_state.get("pf_calistir"):
-            if len(secili) < 1:
-                st.warning("En az bir hisse seç.")
+            _son = pf_veri["tarih"].max()
+            _ay = {"1 ay önce": 1, "3 ay önce": 3, "6 ay önce": 6,
+                   "1 yıl önce": 12, "2 yıl önce": 24}[zaman]
+            kesim = (_son - pd.DateOffset(months=_ay)).date()
+            df_sec = pf_veri[pf_veri["hisse"].isin(secili)]
+            kullan_k = None if port_k is None else min(port_k, len(secili))
+            with st.spinner(f"Model {len(secili)} hisseye bakıp en iyilerini seçiyor..."):
+                pf = portfoy_test(df_sec, model_ad, pd.Timestamp(kesim).isoformat(),
+                                  para, maliyet, kullan_k)
+            if pf is None:
+                st.warning("Bu zaman aralığı için yeterli veri yok — daha yakın bir zaman seç.")
             else:
-                _son = tum_veri["tarih"].max()
-                _ay = {"1 ay önce": 1, "3 ay önce": 3, "6 ay önce": 6,
-                       "1 yıl önce": 12, "2 yıl önce": 24}[zaman]
-                kesim = (_son - pd.DateOffset(months=_ay)).date()
-                df_sec = tum_veri[tum_veri["hisse"].isin(secili)]
-                with st.spinner(f"{len(secili)} hisse için model o güne kadar eğitiliyor..."):
-                    pf = portfoy_test(df_sec, model_ad, pd.Timestamp(kesim).isoformat(),
-                                      para, maliyet, tarz, port_k)
-                if pf is None:
-                    st.warning("Bu zaman aralığı için yeterli veri yok — daha yakın bir zaman seç.")
-                else:
-                    k = st.columns(3)
-                    k[0].metric("💰 Model portföy", _tl(pf["model_son"]),
-                                f"{pf['model_getiri']:+.1%}")
-                    k[1].metric("Al-tut (seçilenler eşit)", _tl(pf["bench_son"]),
-                                f"{pf['bench_getiri']:+.1%}")
-                    k[2].metric("Süre", f"{pf['gun']} işlem günü")
+                k = st.columns(3)
+                k[0].metric("💰 Model portföy", _tl(pf["model_son"]), f"{pf['model_getiri']:+.1%}")
+                k[1].metric("Al-tut (tüm hisseler)", _tl(pf["bench_son"]), f"{pf['bench_getiri']:+.1%}")
+                k[2].metric("Süre", f"{pf['gun']} işlem günü")
 
-                    st.markdown("##### Para eğrisi — her hisse farklı renk, **★ Model portföy** kalın")
-                    st.line_chart(pf["egri"])
+                st.markdown("##### Para eğrisi — modelin seçtiği hisseler + **★ Model portföy**")
+                st.line_chart(pf["egri"])
 
-                    en_cok = pf["tutulan"].drop(labels=["Nakit"], errors="ignore")
-                    tutulan_txt = ", ".join(f"{h} ({n}g)" for h, n in en_cok.head(4).items()) or "—"
-                    kiyas = ("Model al-tut'u geçti 👍" if pf["model_getiri"] > pf["bench_getiri"]
-                             else "Bu dönemde al-tut'u geçemedi.")
-                    st.caption(
-                        f"💡 {_tl(para)} ile {pf['baslangic']:%d.%m.%Y}'te başlandı. {pf['aciklama']}"
-                        f"{tutulan_txt}. {kiyas} Model yalnızca geçmiş veriyle karar verdi — "
-                        "geleceği görmedi, sızıntı yok.")
+                secilen_txt = ", ".join(pf["secilen"])
+                kiyas = ("**Model, hepsini tutmaktan iyiydi 👍**" if pf["model_getiri"] > pf["bench_getiri"]
+                         else "Bu dönemde hepsini tutmayı geçemedi.")
+                karar = "kendi karar verip" if port_k is None else "senin belirlediğin sayıda"
+                st.caption(
+                    f"💡 {_tl(para)} ile {pf['baslangic']:%d.%m.%Y}'te başlandı. Model {karar} "
+                    f"**{len(pf['secilen'])} hisse seçip tuttu: {secilen_txt}** (satış yok). "
+                    f"★ Model portföy = bu hisselerin eşit ağırlığı. "
+                    f"Al-tut (tümü) = tüm hisseleri körü körüne tutmak. {kiyas} "
+                    "Model yalnızca geçmiş veriyle seçti — geleceği görmedi, sızıntı yok.")
+
+                with st.expander(f"📋 Günlük log — {pf['gun']} gün, gün gün ne oldu"):
+                    st.dataframe(pf["gunluk"], use_container_width=True)
+                    _csv = pf["gunluk"].to_csv().encode("utf-8-sig")
+                    st.download_button("📥 Logu indir (CSV)", _csv,
+                                       "portfoy_gunluk_log.csv", "text/csv")
 
 st.divider()
 st.caption("⚠️ Sonuçlar örnek-dışı günlerde, seçilen işlem maliyeti düşülerek hesaplanır. "
