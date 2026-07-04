@@ -95,15 +95,14 @@ def zaman_makinesi(df_tek, model_ad, kesim_iso, sermaye, maliyet):
         return None
     strat_get = bt.strateji_serisi(r["pozisyon"], r["ertesi_getiri"], maliyet)
     altut_get = r["ertesi_getiri"]
-    isabet = float((r["pozisyon"].to_numpy() == r["hedef"].to_numpy()).mean())
     return {
         "baslangic": r["tarih"].iloc[0],
         "gun": len(r["pozisyon"]),
+        "al_gunu": int(r["pozisyon"].sum()),   # kac gun AL (pozisyonda) kalindi
         "strat_son": sermaye * float((1 + strat_get).prod()),
         "altut_son": sermaye * float((1 + altut_get).prod()),
         "strat_getiri": float((1 + strat_get).prod() - 1),
         "altut_getiri": float((1 + altut_get).prod() - 1),
-        "isabet": isabet,
         "egri": pd.DataFrame({
             "tarih": r["tarih"].values,
             "Strateji": (sermaye * (1 + strat_get).cumprod()).values,
@@ -272,11 +271,18 @@ with sekme_zaman:
             z1.metric(f"Strateji ({zm['gun']} işlem günü)", _tl(zm["strat_son"]),
                       f"{zm['strat_getiri']:+.1%}")
             z2.metric("Al-tut (kıyas)", _tl(zm["altut_son"]), f"{zm['altut_getiri']:+.1%}")
-            z3.metric("Modelin isabeti", f"{zm['isabet']:.0%}")
+            z3.metric("Pozisyonda", f"{zm['al_gunu']} / {zm['gun']} gün",
+                      help="Modelin AL dediği (hisse tuttuğu) gün sayısı. Kalan günler nakitte.")
             st.line_chart(zm["egri"].set_index("tarih"))
-            st.caption(f"💰 {_tl(sermaye)} ile {zm['baslangic']:%d.%m.%Y}'te başlayıp modelin "
-                       "günlük sinyalleriyle yönetildi (AL → tut, BEKLE → nakit). Model yalnızca "
-                       "kesim tarihine kadarki veriyle eğitildi — sızıntı yok.")
+            _not = ""
+            if zm["al_gunu"] == 0:
+                _not = " Model bu dönemde hiç AL demedi, yani hep nakitte kaldı — o yüzden strateji düz."
+            elif zm["strat_getiri"] < zm["altut_getiri"]:
+                _not = " Bu kısa pencerede al-tut'u geçemedi; kısa dönem gürültülüdür, genel resim → Özet."
+            st.caption(f"💰 {_tl(sermaye)} ile {zm['baslangic']:%d.%m.%Y}'te başlayıp modelin günlük "
+                       "sinyalleriyle yönetildi (AL → tut, BEKLE → nakit). Nakitte geçen gün ne "
+                       "kazandırır ne kaybettirir." + _not +
+                       " Model yalnızca kesim tarihine kadarki veriyle eğitildi — sızıntı yok.")
 
 # --- SEKME 3: MODEL DETAYI ---
 with sekme_detay:
