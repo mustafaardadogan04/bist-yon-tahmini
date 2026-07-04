@@ -92,6 +92,12 @@ def gecmis_tarih_testi(df_tek: pd.DataFrame, model_ad: str, kesim, ileri_gun: in
     }
 
 
+@st.cache_data(show_spinner=False)
+def zaman_makinesi(df_tek: pd.DataFrame, model_ad: str, kesim_iso: str):
+    # cache'li sarmal: ayni hisse/model/tarih icin her rerun'da yeniden egitmez
+    return gecmis_tarih_testi(df_tek, model_ad, pd.Timestamp(kesim_iso))
+
+
 st.set_page_config(page_title="BIST Hibrit Tahmin", page_icon="📈", layout="wide")
 st.title("📈 BIST Hibrit Tahmin Panosu")
 st.caption("Sizintisiz walk-forward backtest ile teknik gostergelere dayali yon tahmini. "
@@ -149,6 +155,32 @@ test = st.sidebar.slider("Test penceresi (gun)", 20, 120, 60, 10)
 adim = st.sidebar.slider("Kaydirma adimi (gun)", 20, 120, 60, 10)
 maliyet = st.sidebar.slider("Islem maliyeti (binde)", 0.0, 5.0, 1.5, 0.5) / 1000
 
+# --- Zaman makinesi kontrolleri (kenar cubugu) ---
+st.sidebar.divider()
+st.sidebar.subheader("🕰 Geçmiş tarih testi")
+zm_secim = st.sidebar.selectbox(
+    "Modeli hangi güne götürelim?",
+    ["(kapalı)", "1 ay önce", "2 ay önce", "3 ay önce", "6 ay önce", "Tarih seç..."],
+    help="Model yalnızca o tarihe kadarki veriyle eğitilir (sızıntı yok), o gün AL/BEKLE "
+         "der; sonra gerçekte ne olduğunu ortaya çıkarırız.")
+
+zm_kesim = None
+if zm_secim != "(kapalı)" and not df_tek.empty:
+    _son = pd.to_datetime(df_tek["tarih"]).max()
+    _ilk = pd.to_datetime(df_tek["tarih"]).min()
+    if zm_secim == "Tarih seç...":
+        _tmin = (_ilk + pd.Timedelta(days=400)).date()   # egitim icin yer birak
+        _tmax = (_son - pd.Timedelta(days=35)).date()     # ortaya cikarma icin yer birak
+        if _tmin < _tmax:
+            zm_kesim = st.sidebar.date_input("Kesim tarihi",
+                                             value=(_son - pd.Timedelta(days=150)).date(),
+                                             min_value=_tmin, max_value=_tmax)
+        else:
+            st.sidebar.info("Veri aralığı bu test için çok kısa.")
+    else:
+        _ay = {"1 ay önce": 1, "2 ay önce": 2, "3 ay önce": 3, "6 ay önce": 6}[zm_secim]
+        zm_kesim = (_son - pd.DateOffset(months=_ay)).date()
+
 if df_tek.empty or len(df_tek) < egitim + test:
     st.warning("Yeterli veri yok. Farkli bir hisse sec ya da egitim/test penceresini kucult.")
     st.stop()
@@ -185,6 +217,34 @@ k[2].metric("Yillik Sharpe", f"{strat['yillik_sharpe']:.2f}")
 k[3].metric("Maks dusus", f"{strat['maks_dusus']:.1%}")
 k[4].metric("Islem sayisi", f"{strat['islem_sayisi']}")
 
+# --- Zaman makinesi sonucu (kenar cubugundan secilince ust kisimda gorunur) ---
+if zm_kesim is not None:
+    st.divider()
+    st.markdown(f"### 🕰 Model {pd.Timestamp(zm_kesim):%d.%m.%Y} tarihinde ne derdi?")
+    with st.spinner("Model o tarihe kadarki veriyle eğitiliyor..."):
+        zm = zaman_makinesi(df_tek, model_ad, pd.Timestamp(zm_kesim).isoformat())
+    if zm is None:
+        st.warning("Bu tarih için yeterli veri yok — daha ortada bir tarih seç.")
+    else:
+        z1, z2, z3 = st.columns([1, 1, 2])
+        with z1:
+            if zm["sinyal"] == 1:
+                st.success(f"### AL\n{zm['tarih']:%d.%m.%Y} verisine göre")
+            else:
+                st.info(f"### BEKLE\n{zm['tarih']:%d.%m.%Y} verisine göre")
+        with z2:
+            dogru = (zm["sinyal"] == 1) == zm["hedef_tuttu"]
+            st.metric("Ertesi gün gerçekte", f"{zm['ertesi_getiri']:+.2%}",
+                      "✅ model haklı" if dogru else "✗ model yanıldı")
+        with z3:
+            st.metric(f"Sonraki {zm['ileri_gun']} işlem günü (al-tut)", f"{zm['kumulatif']:+.1%}")
+            st.caption("Model yalnızca **ertesi günü** tahmin eder; aylık getiri bağlam içindir.")
+        _zegri = pd.DataFrame({
+            "tarih": pd.to_datetime(zm["sonraki_egri"]["tarih"]).values,
+            "Fiyat (kesim=1₺)": (1 + zm["sonraki_egri"]["getiri"]).cumprod().values,
+        }).set_index("tarih")
+        st.line_chart(_zegri, height=200)
+
 # Sermaye egrisi
 strat_get = bt.strateji_serisi(oos["tahmin"], oos["ertesi_getiri"], maliyet)
 egri = pd.DataFrame({
@@ -204,46 +264,6 @@ with st.expander("Yon dogrulugu detayi (F1 / kesinlik / duyarlilik)"):
     st.caption("Yon dogrulugunu tek basina okuma: taban oran (hep ayni sinifi soylemek) bile "
                "yuksek cikabilir. Olcut, maliyet sonrasi getiri ve Sharpe. "
                "%90 dogruluk gorursen kod hatasi ara.")
-
-with st.expander("🕰 Geçmiş tarih testi — model o gün ne derdi, sonra ne oldu?"):
-    st.caption("Bir tarih seç: model **yalnızca o tarihe kadarki** veriyle eğitilir "
-               "(gelecekten sızıntı yok), o gün AL/BEKLE der; sonra gerçekte ne olduğunu "
-               "ortaya çıkarırız. Kendi tahminini kaydından okuyan dürüst bir sınav.")
-    _tarihler = pd.to_datetime(df_tek["tarih"])
-    _tmin = (_tarihler.min() + pd.Timedelta(days=400)).date()   # egitim icin yer birak
-    _tmax = (_tarihler.max() - pd.Timedelta(days=35)).date()    # ortaya cikarma icin yer birak
-    _varsayilan = (_tarihler.max() - pd.Timedelta(days=150)).date()
-    if _tmin >= _tmax:
-        st.info("Bu veri aralığı geçmiş tarih testi için çok kısa.")
-    else:
-        secilen_tarih = st.date_input("Kesim tarihi", value=_varsayilan,
-                                      min_value=_tmin, max_value=_tmax)
-        if st.button("⏪ Modeli o güne götür"):
-            with st.spinner("Model o tarihe kadarki veriyle eğitiliyor..."):
-                sonuc = gecmis_tarih_testi(df_tek, model_ad, secilen_tarih)
-            if sonuc is None:
-                st.warning("Bu tarih için yeterli veri yok — daha ortada bir tarih seç.")
-            else:
-                g1, g2 = st.columns(2)
-                with g1:
-                    if sonuc["sinyal"] == 1:
-                        st.success(f"### Model: AL\n{sonuc['tarih']:%d.%m.%Y} verisine göre")
-                    else:
-                        st.info(f"### Model: BEKLE\n{sonuc['tarih']:%d.%m.%Y} verisine göre")
-                with g2:
-                    dogru = (sonuc["sinyal"] == 1) == sonuc["hedef_tuttu"]
-                    st.metric("Ertesi gün gerçekte", f"{sonuc['ertesi_getiri']:+.2%}",
-                              "✅ model haklı" if dogru else "✗ model yanıldı")
-                st.caption(f"Model {'yükselecek' if sonuc['sinyal']==1 else 'yükselmeyecek'} dedi; "
-                           f"ertesi gün {'%1 eşiğini aştı' if sonuc['hedef_tuttu'] else 'aşmadı'}. "
-                           f"Sonraki {sonuc['ileri_gun']} işlem günü kümülatif: "
-                           f"**{sonuc['kumulatif']:+.1%}** (bağlam için — model tek gün ilerisini tahmin eder).")
-                _egri = pd.DataFrame({
-                    "tarih": pd.to_datetime(sonuc["sonraki_egri"]["tarih"]).values,
-                    "Fiyat (kesim=1₺)": (1 + sonuc["sonraki_egri"]["getiri"]).cumprod().values,
-                }).set_index("tarih")
-                st.markdown("##### Kesim sonrası fiyat seyri")
-                st.line_chart(_egri)
 
 st.divider()
 st.caption("⚠️ Sonuclar ornek-disi gunlerde, secilen islem maliyeti dusulerek hesaplanir. "
