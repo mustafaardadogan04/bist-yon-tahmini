@@ -150,12 +150,14 @@ if canli:
 model_ad = st.sidebar.selectbox("Model", list(ml.MODELLER), index=list(ml.MODELLER).index("xgboost"))
 st.sidebar.caption("Varsayilan XGBoost: olculen en verimli model (Sharpe 1.35).")
 
-egitim = st.sidebar.slider("Egitim penceresi (gun)", 250, 1000, 500, 50)
-test = st.sidebar.slider("Test penceresi (gun)", 20, 120, 60, 10)
-adim = st.sidebar.slider("Kaydirma adimi (gun)", 20, 120, 60, 10)
-maliyet = st.sidebar.slider("Islem maliyeti (binde)", 0.0, 5.0, 1.5, 0.5) / 1000
-sermaye = st.sidebar.number_input("Baslangic sermayesi (₺)", 1000, 10_000_000, 10_000, 1000,
-                                  help="Sermaye egrisi ve sonuc bu tutar uzerinden ₺ olarak gosterilir.")
+sermaye = st.sidebar.number_input("Başlangıç sermayesi (₺)", 1000, 10_000_000, 10_000, 1000,
+                                  help="Sermaye eğrisi ve sonuç bu tutar üzerinden ₺ gösterilir.")
+maliyet = st.sidebar.slider("İşlem maliyeti (binde)", 0.0, 5.0, 1.5, 0.5) / 1000
+
+with st.sidebar.expander("⚙️ Pencere ayarları (gelişmiş)"):
+    egitim = st.slider("Eğitim penceresi (gün)", 250, 1000, 500, 50)
+    test = st.slider("Test penceresi (gün)", 20, 120, 60, 10)
+    adim = st.slider("Kaydırma adımı (gün)", 20, 120, 60, 10)
 
 # --- Zaman makinesi kontrolleri (kenar cubugu) ---
 st.sidebar.divider()
@@ -197,86 +199,91 @@ with st.spinner("Hesaplaniyor..."):
     sinif = bt.siniflandirma_metrikleri(oos["hedef"].to_numpy(), oos["tahmin"].to_numpy())
     sinyal, sinyal_tarih = guncel_sinyal(df_tek, model_ad)
 
-st.subheader(f"{hisse_adi} — {model_ad}")
-
-s1, s2 = st.columns([1, 3])
-with s1:
-    if sinyal == 1:
-        st.success(f"### Sinyal: AL\n{sinyal_tarih:%d.%m.%Y} verisine gore")
-    elif sinyal == 0:
-        st.info(f"### Sinyal: BEKLE\n{sinyal_tarih:%d.%m.%Y} verisine gore")
-    else:
-        st.write("Sinyal hesaplanamadi.")
-with s2:
-    st.caption(f"Ornek-disi (out-of-sample) deger: {len(oos)} gun  ·  "
-               f"Yon dogrulugu {sinif['dogruluk']:.1%} (taban oran {sinif['taban_oran']:.1%})")
-
-# Metrik kartlari
-k = st.columns(5)
-k[0].metric("Strateji getirisi", f"{strat['kumulatif_getiri']:+.0%}")
-k[1].metric("Al-tut (kiyas)", f"{strat['al_tut_getiri']:+.0%}")
-k[2].metric("Yillik Sharpe", f"{strat['yillik_sharpe']:.2f}")
-k[3].metric("Maks dusus", f"{strat['maks_dusus']:.1%}")
-k[4].metric("Islem sayisi", f"{strat['islem_sayisi']}")
-
-# --- Zaman makinesi sonucu (kenar cubugundan secilince ust kisimda gorunur) ---
-if zm_kesim is not None:
-    st.divider()
-    st.markdown(f"### 🕰 Model {pd.Timestamp(zm_kesim):%d.%m.%Y} tarihinde ne derdi?")
-    with st.spinner("Model o tarihe kadarki veriyle eğitiliyor..."):
-        zm = zaman_makinesi(df_tek, model_ad, pd.Timestamp(zm_kesim).isoformat())
-    if zm is None:
-        st.warning("Bu tarih için yeterli veri yok — daha ortada bir tarih seç.")
-    else:
-        z1, z2, z3 = st.columns([1, 1, 2])
-        with z1:
-            if zm["sinyal"] == 1:
-                st.success(f"### AL\n{zm['tarih']:%d.%m.%Y} verisine göre")
-            else:
-                st.info(f"### BEKLE\n{zm['tarih']:%d.%m.%Y} verisine göre")
-        with z2:
-            dogru = (zm["sinyal"] == 1) == zm["hedef_tuttu"]
-            st.metric("Ertesi gün gerçekte", f"{zm['ertesi_getiri']:+.2%}",
-                      "✅ model haklı" if dogru else "✗ model yanıldı")
-        with z3:
-            st.metric(f"Sonraki {zm['ileri_gun']} işlem günü (al-tut)", f"{zm['kumulatif']:+.1%}")
-            st.caption("Model yalnızca **ertesi günü** tahmin eder; aylık getiri bağlam içindir.")
-        _zegri = pd.DataFrame({
-            "tarih": pd.to_datetime(zm["sonraki_egri"]["tarih"]).values,
-            "Fiyat (kesim=1₺)": (1 + zm["sonraki_egri"]["getiri"]).cumprod().values,
-        }).set_index("tarih")
-        st.line_chart(_zegri, height=200)
-
-# Sermaye egrisi — secilen baslangic sermayesi uzerinden ₺
+# --- Para metriklerini tek yerde hazirla (₺ + %) ---
 strat_get = bt.strateji_serisi(oos["tahmin"], oos["ertesi_getiri"], maliyet)
 altut_get = oos["ertesi_getiri"].reset_index(drop=True)
-egri = pd.DataFrame({
-    "tarih": pd.to_datetime(oos["tarih"]).reset_index(drop=True),
-    "Strateji (₺)": sermaye * (1 + strat_get).cumprod(),
-    "Al-tut (₺)": sermaye * (1 + altut_get).cumprod(),
-}).set_index("tarih")
-
 son_strat = sermaye * float((1 + strat_get).prod())
 son_altut = sermaye * float((1 + altut_get).prod())
+
+
 def _tl(x):
     return f"{x:,.0f}".replace(",", ".") + "₺"
 
-st.markdown(f"##### Sermaye eğrisi — {_tl(sermaye)} başlangıç (maliyet sonrası)")
-st.line_chart(egri)
-mp1, mp2, mp3 = st.columns(3)
-mp1.metric("Başlangıç", _tl(sermaye))
-mp2.metric("Strateji sonu", _tl(son_strat), f"{son_strat/sermaye-1:+.0%}")
-mp3.metric("Al-tut sonu", _tl(son_altut), f"{son_altut/sermaye-1:+.0%}")
 
-with st.expander("Yon dogrulugu detayi (F1 / kesinlik / duyarlilik)"):
+st.subheader(f"{hisse_adi} — {model_ad}")
+
+# Manset: guncel sinyal
+if sinyal == 1:
+    st.success(f"### 📈 Sinyal: AL  ·  {sinyal_tarih:%d.%m.%Y} verisine göre")
+elif sinyal == 0:
+    st.info(f"### ⏸️ Sinyal: BEKLE  ·  {sinyal_tarih:%d.%m.%Y} verisine göre")
+else:
+    st.write("Sinyal hesaplanamadı.")
+
+sekme_ozet, sekme_zaman, sekme_detay = st.tabs(
+    ["📊 Özet", "🕰 Geçmiş tarih testi", "🔍 Model detayı"])
+
+# --- SEKME 1: OZET ---
+with sekme_ozet:
+    m = st.columns(4)
+    m[0].metric("Strateji sonu", _tl(son_strat), f"{son_strat/sermaye-1:+.0%}")
+    m[1].metric("Al-tut (kıyas)", _tl(son_altut), f"{son_altut/sermaye-1:+.0%}")
+    m[2].metric("Yıllık Sharpe", f"{strat['yillik_sharpe']:.2f}")
+    m[3].metric("Maks düşüş", f"{strat['maks_dusus']:.1%}")
+
+    egri = pd.DataFrame({
+        "tarih": pd.to_datetime(oos["tarih"]).reset_index(drop=True),
+        "Strateji (₺)": sermaye * (1 + strat_get).cumprod(),
+        "Al-tut (₺)": sermaye * (1 + altut_get).cumprod(),
+    }).set_index("tarih")
+    st.markdown(f"##### Sermaye eğrisi — {_tl(sermaye)} başlangıç (maliyet sonrası)")
+    st.line_chart(egri)
+    st.caption(f"{len(oos)} örnek-dışı gün · {strat['islem_sayisi']} işlem · "
+               "al-tut ile aynı dönemde karşılaştırıldı.")
+
+# --- SEKME 2: ZAMAN MAKINESI ---
+with sekme_zaman:
+    if zm_kesim is None:
+        st.info("← Kenar çubuğundaki **🕰 Geçmiş tarih testi** menüsünden bir zaman seç "
+                "(örn. *2 ay önce*). Model o güne kadarki veriyle eğitilip ne diyeceğini, "
+                "sonra gerçekte ne olduğunu gösterir.")
+    else:
+        st.markdown(f"##### Model {pd.Timestamp(zm_kesim):%d.%m.%Y} tarihinde ne derdi?")
+        with st.spinner("Model o tarihe kadarki veriyle eğitiliyor..."):
+            zm = zaman_makinesi(df_tek, model_ad, pd.Timestamp(zm_kesim).isoformat())
+        if zm is None:
+            st.warning("Bu tarih için yeterli veri yok — daha ortada bir zaman seç.")
+        else:
+            z1, z2 = st.columns(2)
+            with z1:
+                if zm["sinyal"] == 1:
+                    st.success(f"### AL\n{zm['tarih']:%d.%m.%Y} verisine göre")
+                else:
+                    st.info(f"### BEKLE\n{zm['tarih']:%d.%m.%Y} verisine göre")
+            with z2:
+                dogru = (zm["sinyal"] == 1) == zm["hedef_tuttu"]
+                st.metric("Ertesi gün gerçekte", f"{zm['ertesi_getiri']:+.2%}",
+                          "✅ model haklı" if dogru else "✗ model yanıldı")
+            st.caption(f"Sonraki {zm['ileri_gun']} işlem günü al-tut: **{zm['kumulatif']:+.1%}** "
+                       "(bağlam için — model yalnızca ertesi günü tahmin eder).")
+            _zegri = pd.DataFrame({
+                "tarih": pd.to_datetime(zm["sonraki_egri"]["tarih"]).values,
+                "Fiyat (kesim=1₺)": (1 + zm["sonraki_egri"]["getiri"]).cumprod().values,
+            }).set_index("tarih")
+            st.line_chart(_zegri, height=200)
+
+# --- SEKME 3: MODEL DETAYI ---
+with sekme_detay:
+    st.caption(f"Örnek-dışı (out-of-sample) değer: {len(oos)} gün  ·  "
+               f"Yön doğruluğu {sinif['dogruluk']:.1%} (taban oran {sinif['taban_oran']:.1%})")
     d = st.columns(3)
     d[0].metric("F1", f"{sinif['f1']:.3f}")
     d[1].metric("Kesinlik", f"{sinif['kesinlik']:.3f}")
-    d[2].metric("Duyarlilik", f"{sinif['duyarlilik']:.3f}")
-    st.caption("Yon dogrulugunu tek basina okuma: taban oran (hep ayni sinifi soylemek) bile "
-               "yuksek cikabilir. Olcut, maliyet sonrasi getiri ve Sharpe. "
-               "%90 dogruluk gorursen kod hatasi ara.")
+    d[2].metric("Duyarlılık", f"{sinif['duyarlilik']:.3f}")
+    st.caption("Bu değerlerin düşük olması **beklenendir**: 'yükselecek' günleri azınlıkta "
+               "(dengesiz sınıf) ve yön tahmini doğası gereği zor. Ölçüt bunlar değil — maliyet "
+               "sonrası getiri ve Sharpe. Yüksek F1 / %90 doğruluk görürsen sızıntı/kod hatası ara.")
 
 st.divider()
-st.caption("⚠️ Sonuclar ornek-disi gunlerde, secilen islem maliyeti dusulerek hesaplanir. "
-           "Gecmis performans gelecegi garanti etmez. Yatirim tavsiyesi degildir.")
+st.caption("⚠️ Sonuçlar örnek-dışı günlerde, seçilen işlem maliyeti düşülerek hesaplanır. "
+           "Geçmiş performans geleceği garanti etmez. Yatırım tavsiyesi değildir.")
