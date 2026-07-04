@@ -67,35 +67,49 @@ def guncel_sinyal(df_tek: pd.DataFrame, model_ad: str):
     return int(tahmin[0]), son["tarih"].iloc[-1]
 
 
-def gecmis_tarih_testi(df_tek: pd.DataFrame, model_ad: str, kesim, ileri_gun: int = 20):
-    # ZAMAN MAKINESI: kesim tarihine kadarki veriyle egit, o gun tahmin et, SONRASINI
-    # ortaya cikar. Egitim yalniz kesim'den ONCEKI (hedefi o gun bilinen) satirlarla
-    # yapilir -> gelecekten sizinti yok.
-    df = df_tek.sort_values("tarih").reset_index(drop=True)
-    kesim = pd.Timestamp(kesim)
-    ozellik = [k for k in df.columns if k not in bt.META_KOLONLAR]
-    egitim = df[df["tarih"] < kesim]
-    tahmin_satiri = df[df["tarih"] <= kesim].tail(1)   # kesim gunu (ya da en yakin onceki)
-    sonraki = df[df["tarih"] > kesim].head(ileri_gun)  # ortaya cikarilacak gunler
-    if len(egitim) < 100 or tahmin_satiri.empty or sonraki.empty:
+@st.cache_data(show_spinner=False)
+def _zm_tahmin(df_tek: pd.DataFrame, model_ad: str, kesim_iso: str):
+    # ZAMAN MAKINESI (pahali kisim, cache'li): modeli kesim tarihine kadarki veriyle
+    # BIR KEZ egit, sonra o gunden itibaren gunluk sinyalleri uret. Egitim yalniz
+    # kesim'den ONCEKI veriyle -> gelecekten sizinti yok. (sermaye/maliyetten bagimsiz)
+    df2 = bt.ertesi_getiri_ekle(df_tek.sort_values("tarih").reset_index(drop=True))
+    kesim = pd.Timestamp(kesim_iso)
+    ozellik = [k for k in df2.columns if k not in bt.META_KOLONLAR]
+    egitim = df2[df2["tarih"] < kesim]
+    pencere = df2[df2["tarih"] >= kesim].reset_index(drop=True)   # kesim gununden bugune
+    if len(egitim) < 100 or len(pencere) < 5:
         return None
-    tahmin = ml.MODELLER[model_ad](egitim[ozellik], egitim["hedef"], tahmin_satiri[ozellik])
-    ertesi_getiri = float(sonraki["getiri"].iloc[0])   # kesim+1 gununun gercek getirisi
+    tahmin = ml.MODELLER[model_ad](egitim[ozellik], egitim["hedef"], pencere[ozellik])
     return {
-        "tarih": tahmin_satiri["tarih"].iloc[0],
-        "sinyal": int(tahmin[0]),
-        "ertesi_getiri": ertesi_getiri,
-        "hedef_tuttu": ertesi_getiri > bt.HEDEF_ESIK,   # ertesi gun gercekten %1 asti mi
-        "kumulatif": float((1 + sonraki["getiri"]).prod() - 1),   # sonraki ~ay
-        "ileri_gun": len(sonraki),
-        "sonraki_egri": sonraki[["tarih", "getiri"]].copy(),
+        "tarih": pencere["tarih"],
+        "pozisyon": pd.Series(tahmin),
+        "ertesi_getiri": pencere["ertesi_getiri"].reset_index(drop=True),
+        "hedef": pencere["hedef"].reset_index(drop=True),
     }
 
 
-@st.cache_data(show_spinner=False)
-def zaman_makinesi(df_tek: pd.DataFrame, model_ad: str, kesim_iso: str):
-    # cache'li sarmal: ayni hisse/model/tarih icin her rerun'da yeniden egitmez
-    return gecmis_tarih_testi(df_tek, model_ad, pd.Timestamp(kesim_iso))
+def zaman_makinesi(df_tek, model_ad, kesim_iso, sermaye, maliyet):
+    # ucuz kisim: egitilmis tahminlere maliyet + sermaye uygula (portfoy senaryosu)
+    r = _zm_tahmin(df_tek, model_ad, kesim_iso)
+    if r is None:
+        return None
+    strat_get = bt.strateji_serisi(r["pozisyon"], r["ertesi_getiri"], maliyet)
+    altut_get = r["ertesi_getiri"]
+    isabet = float((r["pozisyon"].to_numpy() == r["hedef"].to_numpy()).mean())
+    return {
+        "baslangic": r["tarih"].iloc[0],
+        "gun": len(r["pozisyon"]),
+        "strat_son": sermaye * float((1 + strat_get).prod()),
+        "altut_son": sermaye * float((1 + altut_get).prod()),
+        "strat_getiri": float((1 + strat_get).prod() - 1),
+        "altut_getiri": float((1 + altut_get).prod() - 1),
+        "isabet": isabet,
+        "egri": pd.DataFrame({
+            "tarih": r["tarih"].values,
+            "Strateji": (sermaye * (1 + strat_get).cumprod()).values,
+            "Al-tut": (sermaye * (1 + altut_get).cumprod()).values,
+        }),
+    }
 
 
 st.set_page_config(page_title="BIST Hibrit Tahmin", page_icon="📈", layout="wide")
@@ -247,33 +261,22 @@ with sekme_zaman:
                 "(örn. *2 ay önce*). Model o güne kadarki veriyle eğitilip ne diyeceğini, "
                 "sonra gerçekte ne olduğunu gösterir.")
     else:
-        st.markdown(f"##### Model {pd.Timestamp(zm_kesim):%d.%m.%Y} tarihinde ne derdi?")
+        st.markdown(f"##### Bu modelle {pd.Timestamp(zm_kesim):%d.%m.%Y} tarihinde başlasaydın")
         with st.spinner("Model o tarihe kadarki veriyle eğitiliyor..."):
-            zm = zaman_makinesi(df_tek, model_ad, pd.Timestamp(zm_kesim).isoformat())
+            zm = zaman_makinesi(df_tek, model_ad, pd.Timestamp(zm_kesim).isoformat(),
+                                sermaye, maliyet)
         if zm is None:
             st.warning("Bu tarih için yeterli veri yok — daha ortada bir zaman seç.")
         else:
             z1, z2, z3 = st.columns(3)
-            with z1:
-                if zm["sinyal"] == 1:
-                    st.success(f"### AL\n{zm['tarih']:%d.%m.%Y}")
-                else:
-                    st.info(f"### BEKLE\n{zm['tarih']:%d.%m.%Y}")
-            with z2:
-                dogru = (zm["sinyal"] == 1) == zm["hedef_tuttu"]
-                st.metric("Ertesi gün (modelin tahmini)", f"{zm['ertesi_getiri']:+.2%}",
-                          "✅ model haklı" if dogru else "✗ model yanıldı")
-            with z3:
-                son_para = sermaye * (1 + zm["kumulatif"])
-                st.metric(f"{_tl(sermaye)} → {zm['ileri_gun']} gün sonra",
-                          _tl(son_para), f"{zm['kumulatif']:+.1%}")
-            st.caption("💰 Para: kesim gününde alıp elde tutma senaryosu (al-tut). "
-                       "Model yalnızca **ertesi günü** tahmin eder — para, sonrasını görmen için.")
-            _zegri = pd.DataFrame({
-                "tarih": pd.to_datetime(zm["sonraki_egri"]["tarih"]).values,
-                "Fiyat (kesim=1₺)": (1 + zm["sonraki_egri"]["getiri"]).cumprod().values,
-            }).set_index("tarih")
-            st.line_chart(_zegri, height=200)
+            z1.metric(f"Strateji ({zm['gun']} işlem günü)", _tl(zm["strat_son"]),
+                      f"{zm['strat_getiri']:+.1%}")
+            z2.metric("Al-tut (kıyas)", _tl(zm["altut_son"]), f"{zm['altut_getiri']:+.1%}")
+            z3.metric("Modelin isabeti", f"{zm['isabet']:.0%}")
+            st.line_chart(zm["egri"].set_index("tarih"))
+            st.caption(f"💰 {_tl(sermaye)} ile {zm['baslangic']:%d.%m.%Y}'te başlayıp modelin "
+                       "günlük sinyalleriyle yönetildi (AL → tut, BEKLE → nakit). Model yalnızca "
+                       "kesim tarihine kadarki veriyle eğitildi — sızıntı yok.")
 
 # --- SEKME 3: MODEL DETAYI ---
 with sekme_detay:
