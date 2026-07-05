@@ -156,7 +156,8 @@ def hedef_ekle(fiyat: pd.DataFrame) -> pd.Series:
 
 def hisseyi_isle(ticker: str, usdtry: pd.Series | None,
                  endeks: pd.DataFrame | None = None,
-                 kur_vol: pd.DataFrame | None = None) -> pd.DataFrame:
+                 kur_vol: pd.DataFrame | None = None,
+                 tahmin_satiri: bool = False) -> pd.DataFrame:
     fiyat = fiyat_cek(ticker)
     if fiyat.empty:
         print(f"  ! {ticker}: veri bulunamadi, atlaniyor.")
@@ -181,10 +182,19 @@ def hisseyi_isle(ticker: str, usdtry: pd.Series | None,
     if kur_vol is not None:
         ozellikler = ozellikler.join(kur_vol, how="left")
 
-    # inf'leri (orn. onceki hacim 0) NaN yap, sonra gosterge isinmasi + hedef
-    # kaymasi NaN'lariyla birlikte at
-    ozellikler = ozellikler.replace([np.inf, -np.inf], np.nan).dropna()
-    ozellikler["hedef"] = ozellikler["hedef"].astype(int)   # NaN'li seri float olmustu
+    # inf'leri (orn. onceki hacim 0) NaN yap
+    ozellikler = ozellikler.replace([np.inf, -np.inf], np.nan)
+    if tahmin_satiri:
+        # Canli tahmin: EN SON barin hedefi (ertesi gun yonu) henuz bilinmiyor
+        # (yarinin kapanisi yok) ama ozellikleri tam. O bari TAHMIN icin tut;
+        # yalniz gosterge isinmasi yuzunden ozelligi eksik satirlari at.
+        # Aksi halde son bar dusup sinyal bir gun eski kalirdi.
+        ozellik_kol = [k for k in ozellikler.columns if k != "hedef"]
+        ozellikler = ozellikler.dropna(subset=ozellik_kol)
+    else:
+        # Egitim verisi: hedef kaymasi + isinma NaN'larini birlikte at
+        ozellikler = ozellikler.dropna()
+        ozellikler["hedef"] = ozellikler["hedef"].astype(int)   # NaN'li seri float olmustu
     ozellikler.index.name = "tarih"
     print(f"  + {ticker}: {len(ozellikler)} satir hazir.")
     return ozellikler.reset_index()

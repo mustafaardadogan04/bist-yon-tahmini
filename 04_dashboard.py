@@ -49,8 +49,10 @@ def veri_yukle() -> pd.DataFrame:
 @st.cache_data(show_spinner="Hisse yfinance'ten cekiliyor...")
 def hisse_cek(ticker: str, gun: str) -> pd.DataFrame:
     # bir BIST kodunu canli cek; 'gun' cache anahtari (gunde bir cekim)
+    # tahmin_satiri=True: en son bar (hedefi henuz bilinmeyen) tahmin icin tutulur
     usdtry = veri.usdtry_degisimi_cek()
-    return veri.hisseyi_isle(ticker, usdtry if not usdtry.empty else None)
+    return veri.hisseyi_isle(ticker, usdtry if not usdtry.empty else None,
+                             tahmin_satiri=True)
 
 
 @st.cache_data(show_spinner="Hisseler yfinance'ten güncel çekiliyor...")
@@ -210,10 +212,12 @@ with sekme_tek:
             sinif = bt.siniflandirma_metrikleri(oos["hedef"].to_numpy(), oos["tahmin"].to_numpy())
             sinyal, sinyal_tarih = guncel_sinyal(df_tek, model_ad)
 
+        # tahmin, son veri gununun ERTESI islem gunu icin -> hafta sonunu atla
+        hedef_gun = pd.Timestamp(sinyal_tarih) + pd.offsets.BDay(1)
         if sinyal == 1:
-            st.success(f"### 📈 {hisse_adi}: yarın için sinyal **AL**  ·  {sinyal_tarih:%d.%m.%Y}")
+            st.success(f"### 📈 {hisse_adi}: **{hedef_gun:%d.%m.%Y}** için sinyal **AL**  ·  {sinyal_tarih:%d.%m.%Y} verisine göre")
         elif sinyal == 0:
-            st.info(f"### ⏸️ {hisse_adi}: yarın için sinyal **BEKLE**  ·  {sinyal_tarih:%d.%m.%Y}")
+            st.info(f"### ⏸️ {hisse_adi}: **{hedef_gun:%d.%m.%Y}** için sinyal **BEKLE**  ·  {sinyal_tarih:%d.%m.%Y} verisine göre")
 
         m = st.columns(4)
         m[0].metric("Strateji getirisi", f"{strat['kumulatif_getiri']:+.0%}")
